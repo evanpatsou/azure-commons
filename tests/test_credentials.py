@@ -1,6 +1,6 @@
 import unittest
 from azure.identity import ClientSecretCredential
-from azure_data_loader.credentials.credential_factory import AzureCredentialFactory
+from azure_data_loader.credentials.credentials import CredentialFactory
 
 class TestAzureCredentialFactory(unittest.TestCase):
     def setUp(self):

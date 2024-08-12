@@ -1,0 +1,40 @@
+import unittest
+from unittest.mock import MagicMock, patch
+from azure_blob_client import AzureBlobClient
+from azure.storage.blob import BlobServiceClient
+
+class TestAzureBlobClient(unittest.TestCase):
+
+    @patch('azure_blob_client.BlobServiceClient')
+    def setUp(self, MockBlobServiceClient):
+        self.mock_blob_service_client = MockBlobServiceClient.return_value
+        self.mock_blob_service_client.get_blob_client.return_value = MagicMock()
+        self.credentials = MagicMock()  # Mock credentials
+        self.account_name = "dummy_account"
+        self.client = AzureBlobClient(self.account_name, self.credentials)
+
+    def test_blob_service_client_initialization(self):
+        self.assertIsInstance(self.client.blob_service_client, BlobServiceClient)
+
+    def test_download_blob_success(self):
+        self.client.download_blob("dummy_container", "dummy_blob", "dummy_path")
+        self.mock_blob_service_client.get_blob_client.assert_called_once_with(container="dummy_container", blob="dummy_blob")
+
+    def test_upload_blob_success(self):
+        with patch("builtins.open", unittest.mock.mock_open(read_data=b"data")) as mock_file:
+            self.client.upload_blob("dummy_container", "dummy_file_path", "dummy_blob")
+            self.mock_blob_service_client.get_blob_client.assert_called_once_with(container="dummy_container", blob="dummy_blob")
+            mock_file.assert_called_once_with("dummy_file_path", "rb")
+
+    def test_download_blob_failure(self):
+        self.mock_blob_service_client.get_blob_client.side_effect = Exception("Download error")
+        with self.assertRaises(Exception):
+            self.client.download_blob("dummy_container", "dummy_blob", "dummy_path")
+
+    def test_upload_blob_failure(self):
+        self.mock_blob_service_client.get_blob_client.side_effect = Exception("Upload error")
+        with self.assertRaises(Exception):
+            self.client.upload_blob("dummy_container", "dummy_file_path", "dummy_blob")
+
+if __name__ == '__main__':
+    unittest.main()
