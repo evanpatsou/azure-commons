@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock
 from azure_blob_client import AzureBlobClient
 from azure.storage.blob import BlobServiceClient
 
@@ -8,7 +8,7 @@ class TestAzureBlobClient(unittest.TestCase):
     @patch('azure_blob_client.BlobServiceClient')
     def setUp(self, MockBlobServiceClient):
         self.mock_blob_service_client = MockBlobServiceClient.return_value
-        self.mock_blob_service_client.get_blob_client.return_value = MagicMock()
+        self.mock_blob_client = self.mock_blob_service_client.get_blob_client.return_value
         self.credentials = MagicMock()  # Mock credentials
         self.account_name = "dummy_account"
         self.client = AzureBlobClient(self.account_name, self.credentials)
@@ -16,23 +16,29 @@ class TestAzureBlobClient(unittest.TestCase):
     def test_blob_service_client_initialization(self):
         self.assertIsInstance(self.client.blob_service_client, BlobServiceClient)
 
-    def test_download_blob_success(self):
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
+    def test_download_blob_success(self, mock_open):
+        self.mock_blob_client.download_blob.return_value.readall.return_value = b'data'
         self.client.download_blob("dummy_container", "dummy_blob", "dummy_path")
         self.mock_blob_service_client.get_blob_client.assert_called_once_with(container="dummy_container", blob="dummy_blob")
+        mock_open.assert_called_once_with("dummy_path", "wb")
+        self.mock_blob_client.download_blob().readall.assert_called_once()
 
-    def test_upload_blob_success(self):
-        with patch("builtins.open", unittest.mock.mock_open(read_data=b"data")) as mock_file:
-            self.client.upload_blob("dummy_container", "dummy_file_path", "dummy_blob")
-            self.mock_blob_service_client.get_blob_client.assert_called_once_with(container="dummy_container", blob="dummy_blob")
-            mock_file.assert_called_once_with("dummy_file_path", "rb")
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
+    def test_upload_blob_success(self, mock_open):
+        mock_open.return_value.read.return_value = b'data'
+        self.client.upload_blob("dummy_container", "dummy_file_path", "dummy_blob")
+        self.mock_blob_service_client.get_blob_client.assert_called_once_with(container="dummy_container", blob="dummy_blob")
+        mock_open.assert_called_once_with("dummy_file_path", "rb")
+        self.mock_blob_client.upload_blob.assert_called_once_with(b'data', overwrite=True)
 
     def test_download_blob_failure(self):
-        self.mock_blob_service_client.get_blob_client.side_effect = Exception("Download error")
+        self.mock_blob_client.download_blob.side_effect = Exception("Download error")
         with self.assertRaises(Exception):
             self.client.download_blob("dummy_container", "dummy_blob", "dummy_path")
 
     def test_upload_blob_failure(self):
-        self.mock_blob_service_client.get_blob_client.side_effect = Exception("Upload error")
+        self.mock_blob_client.upload_blob.side_effect = Exception("Upload error")
         with self.assertRaises(Exception):
             self.client.upload_blob("dummy_container", "dummy_file_path", "dummy_blob")
 

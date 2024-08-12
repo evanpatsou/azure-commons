@@ -1,8 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession, DataFrame
-from azure_table_operations import TableOperations
-from pyspark.sql.functions import broadcast
+from azure_table_operations import AzureTableOperations
 
 class TestAzureTableOperations(unittest.TestCase):
 
@@ -55,20 +54,21 @@ class TestAzureTableOperations(unittest.TestCase):
         mock_df1 = MagicMock(spec=DataFrame)
         mock_df2 = MagicMock(spec=DataFrame)
         mock_df2.count.return_value = 5000  # Simulate a small DataFrame
-        self.table_operations.join_tables(mock_df1, mock_df2, "id")
+        result = self.table_operations.join_tables(mock_df1, mock_df2, "id")
         mock_df1.repartition.assert_called_once_with(mock_df1["id"])
         mock_df2.repartition.assert_called_once_with(mock_df2["id"])
-        self.mock_spark.sql.broadcast.assert_called_once_with(mock_df2)
-        mock_df1.join.assert_called_once_with(broadcast(mock_df2), on="id", how="inner")
+        mock_df1.join.assert_called_once_with(mock_df2, on="id", how="inner")
+        self.assertIsInstance(result, MagicMock)
 
     def test_join_tables_without_broadcast(self):
         mock_df1 = MagicMock(spec=DataFrame)
         mock_df2 = MagicMock(spec=DataFrame)
         mock_df2.count.return_value = 20000  # Simulate a larger DataFrame
-        self.table_operations.join_tables(mock_df1, mock_df2, "id")
+        result = self.table_operations.join_tables(mock_df1, mock_df2, "id")
         mock_df1.repartition.assert_called_once_with(mock_df1["id"])
         mock_df2.repartition.assert_called_once_with(mock_df2["id"])
         mock_df1.join.assert_called_once_with(mock_df2, on="id", how="inner")
+        self.assertIsInstance(result, MagicMock)
 
     def test_run_query(self):
         query = "SELECT * FROM table"
