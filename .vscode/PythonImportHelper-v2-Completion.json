@@ -33,14 +33,6 @@
         "documentation": {}
     },
     {
-        "label": "DataFrame",
-        "importPath": "pyspark.sql",
-        "description": "pyspark.sql",
-        "isExtraImport": true,
-        "detail": "pyspark.sql",
-        "documentation": {}
-    },
-    {
         "label": "ReusedPySparkTestCase",
         "importPath": "pyspark.testing.utils",
         "description": "pyspark.testing.utils",
@@ -105,6 +97,14 @@
         "documentation": {}
     },
     {
+        "label": "ClientSecretCredential",
+        "importPath": "azure.identity",
+        "description": "azure.identity",
+        "isExtraImport": true,
+        "detail": "azure.identity",
+        "documentation": {}
+    },
+    {
         "label": "BlobServiceClient",
         "importPath": "azure.storage.blob",
         "description": "azure.storage.blob",
@@ -131,11 +131,12 @@
         "documentation": {}
     },
     {
-        "label": "Optional",
-        "importPath": "typing",
-        "description": "typing",
+        "label": "requests",
+        "kind": 6,
         "isExtraImport": true,
-        "detail": "typing",
+        "importPath": "requests",
+        "description": "requests",
+        "detail": "requests",
         "documentation": {}
     },
     {
@@ -220,7 +221,7 @@
         "kind": 6,
         "importPath": "azure_table_operations",
         "description": "azure_table_operations",
-        "peekOfCode": "class DatabricksSparkConnector:\n    def __init__(self, tenant_id: str = \"\", client_id: str = \"\", client_secret: str = \"\", storage_account_name: str = \"\"):\n        self.tenant_id = tenant_id\n        self.client_id = client_id\n        self.client_secret = client_secret\n        self.storage_account_name = storage_account_name\n        self.is_running_on_databricks = 'DATABRICKS_RUNTIME_VERSION' in os.environ\n        self.spark = self._initialize_spark()\n    def _initialize_spark(self) -> SparkSession:\n        if self.is_running_on_databricks:",
+        "peekOfCode": "class DatabricksSparkConnector:\n    def __init__(self, tenant_id: str, client_id: str, client_secret: str, \n                 storage_account_name: str, databricks_workspace_url: str, cluster_id: str):\n        self.tenant_id = tenant_id\n        self.client_id = client_id\n        self.client_secret = client_secret\n        self.storage_account_name = storage_account_name\n        self.databricks_workspace_url = databricks_workspace_url\n        self.cluster_id = cluster_id\n        self.is_running_on_databricks = 'DATABRICKS_RUNTIME_VERSION' in os.environ",
         "detail": "azure_table_operations",
         "documentation": {}
     },
