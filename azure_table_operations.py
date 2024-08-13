@@ -1,146 +1,90 @@
-import logging
-from pyspark.sql import SparkSession
-from azure_credentials import AzureCredentials
+import os
+from pyspark.sql import SparkSession, DataFrame
+from typing import Optional
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+class DatabricksSparkConnector:
+    def __init__(self, tenant_id: str = "", client_id: str = "", client_secret: str = "", storage_account_name: str = ""):
+        self.tenant_id = tenant_id
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.storage_account_name = storage_account_name
+        self.is_running_on_databricks = 'DATABRICKS_RUNTIME_VERSION' in os.environ
+        self.spark = self._initialize_spark()
 
-class TableOperations:
-    """Handles loading, joining, querying tables, and running SQL queries with abfss:// using PySpark."""
-    
-    def __init__(self, account_name: str, credentials: AzureCredentials):
-        try:
-            self.spark = SparkSession.builder \
-                .appName("AzureTableOperations") \
-                .config("fs.azure.account.auth.type", "OAuth") \
-                .config("fs.azure.account.oauth.provider.type", "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider") \
-                .config("fs.azure.account.oauth2.client.id", credentials.credential._client_id) \
-                .config("fs.azure.account.oauth2.client.secret", credentials.credential._client_secret) \
-                .config("fs.azure.account.oauth2.client.endpoint", f"https://login.microsoftonline.com/{credentials.credential._tenant_id}/oauth2/token") \
+    def _initialize_spark(self) -> SparkSession:
+        if self.is_running_on_databricks:
+            print("Running on Databricks, using the existing Spark session.")
+            spark = SparkSession.builder.appName("DatabricksSparkConnector").getOrCreate()
+        else:
+            print("Running locally, using Databricks Connect or another local Spark setup.")
+            spark = SparkSession.builder \
+                .appName("DatabricksSparkConnector") \
+                .config("spark.databricks.service.principal.client.id", self.client_id) \
+                .config("spark.databricks.service.principal.client.secret", self.client_secret) \
+                .config("spark.databricks.service.principal.tenant.id", self.tenant_id) \
+                .config("fs.azure.account.auth.type.{}.dfs.core.windows.net".format(self.storage_account_name), "OAuth") \
+                .config("fs.azure.account.oauth.provider.type.{}.dfs.core.windows.net".format(self.storage_account_name), "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider") \
+                .config("fs.azure.account.oauth2.client.id.{}.dfs.core.windows.net".format(self.storage_account_name), self.client_id) \
+                .config("fs.azure.account.oauth2.client.secret.{}.dfs.core.windows.net".format(self.storage_account_name), self.client_secret) \
+                .config("fs.azure.account.oauth2.client.endpoint.{}.dfs.core.windows.net".format(self.storage_account_name), f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/token") \
                 .getOrCreate()
-            logger.info("Spark session initialized successfully.")
-        except Exception as e:
-            logger.error(f"Error initializing Spark session: {e}")
-            raise
+        return spark
 
-    def load_table(self, file_path: str, filters: list = None):
-        """Loads a table from Azure Data Lake Storage Gen2 using abfss:// with optional filters for predicate pushdown."""
-        try:
-            abfss_url = f"abfss://{file_path}"
-            logger.info(f"Loading table from {abfss_url}...")
+    def load_table(self, path: str, format: str = "delta", options: Optional[dict] = None) -> DataFrame:
+        """Loads a table from the specified path."""
+        if options is None:
+            options = {}
+        print(f"Loading data from {path} with format {format}")
+        return self.spark.read.format(format).options(**options).load(path)
 
-            if filters:
-                filter_query = " AND ".join([f"{f['column']} {f['operator']} {f['value']}" for f in filters if "custom_condition" not in f])
-                df = self.spark.read.csv(abfss_url, header=True, inferSchema=True).filter(filter_query)
-            else:
-                df = self.spark.read.csv(abfss_url, header=True, inferSchema=True)
+    def filter_data(self, df: DataFrame, filter_query: str) -> DataFrame:
+        """Filters the DataFrame based on the given query."""
+        print(f"Filtering data with query: {filter_query}")
+        return df.filter(filter_query)
 
-            return df
-        except Exception as e:
-            logger.error(f"Error loading table: {e}")
-            raise
+    def join_dataframes(self, df1: DataFrame, df2: DataFrame, join_condition: str, join_type: str = "inner") -> DataFrame:
+        """Joins two DataFrames based on the specified join condition."""
+        print(f"Joining DataFrames with condition: {join_condition} and join type: {join_type}")
+        return df1.join(df2, join_condition, join_type)
 
-    def find_closest_date(self, df, date_column: str, target_date: str):
-        """Finds the row with the closest date to the target date."""
-        try:
-            df = df.withColumn(date_column, df[date_column].cast("timestamp"))
-            df.createOrReplaceTempView("table")
-            query = f"""
-            SELECT * FROM table
-            ORDER BY ABS(DATEDIFF({date_column}, '{target_date}')) LIMIT 1
-            """
-            return self.spark.sql(query)
-        except Exception as e:
-            logger.error(f"Error finding closest date: {e}")
-            raise
+    def join_with_query(self, df1: DataFrame, df2: DataFrame, query: str) -> DataFrame:
+        """Joins two DataFrames using a SQL query."""
+        df1.createOrReplaceTempView("df1")
+        df2.createOrReplaceTempView("df2")
+        print(f"Joining DataFrames with SQL query: {query}")
+        return self.spark.sql(query)
 
-    def apply_filters(self, df, filters: list):
-        """
-        Applies flexible filters to the DataFrame.
-        
-        Args:
-            df: The DataFrame to filter.
-            filters: A list of filter conditions, each represented as a dictionary.
-        
-        Returns:
-            The filtered DataFrame.
-        """
-        try:
-            for filter_condition in filters:
-                if "custom_condition" in filter_condition:
-                    df = df.filter(filter_condition["custom_condition"])
-                else:
-                    column = filter_condition["column"]
-                    operator = filter_condition["operator"]
-                    value = filter_condition["value"]
-                    
-                    if operator == "==":
-                        df = df.filter(df[column] == value)
-                    elif operator == "!=":
-                        df = df.filter(df[column] != value)
-                    elif operator == "<":
-                        df = df.filter(df[column] < value)
-                    elif operator == "<=":
-                        df = df.filter(df[column] <= value)
-                    elif operator == ">":
-                        df = df.filter(df[column] > value)
-                    elif operator == ">=":
-                        df = df.filter(df[column] >= value)
-                    else:
-                        raise ValueError(f"Unsupported operator: {operator}")
+    def stop(self):
+        """Stops the Spark session."""
+        print("Stopping the Spark session.")
+        self.spark.stop()
 
-            df = df.persist()  # Persist the DataFrame if it will be reused
-            return df
-        except Exception as e:
-            logger.error(f"Error applying filters: {e}")
-            raise
+# Example usage:
+if __name__ == "__main__":
+    connector = DatabricksSparkConnector(
+        tenant_id="your-tenant-id",
+        client_id="your-client-id",
+        client_secret="your-client-secret",
+        storage_account_name="your-storage-account-name"
+    )
 
-    def join_tables(self, df1, df2, join_column: str, how: str = 'inner'):
-        """Joins two DataFrames on a specified column with repartitioning and optional broadcast join."""
-        try:
-            logger.info(f"Joining tables on column '{join_column}' with '{how}' join...")
-
-            # Repartition DataFrames on the join column to optimize the join
-            df1 = df1.repartition(df1[join_column])
-            df2 = df2.repartition(df2[join_column])
-
-            # Use broadcast join if df2 is significantly smaller
-            if df2.count() < 10000:  # Example threshold for broadcasting
-                df2 = broadcast(df2)
-
-            return df1.join(df2, on=join_column, how=how)
-        except Exception as e:
-            logger.error(f"Error joining tables: {e}")
-            raise
-
-    def run_query(self, query: str):
-        """
-        Runs an SQL query against the loaded data.
-        
-        Args:
-            query (str): The SQL query to execute.
-        
-        Returns:
-            pyspark.sql.DataFrame: The result of the query as a DataFrame.
-        """
-        try:
-            logger.info(f"Running query: {query}")
-            df = self.spark.sql(query)
-
-            # Check the execution plan
-            df.explain()
-
-            return df
-        except Exception as e:
-            logger.error(f"Error running query: {e}")
-            raise
-
-    def save_as_parquet(self, df, output_path: str):
-        """Saves the DataFrame as Parquet to the specified path."""
-        try:
-            df.write.parquet(output_path)
-            logger.info(f"Data saved as Parquet at {output_path}")
-        except Exception as e:
-            logger.error(f"Error saving data as Parquet: {e}")
-            raise
+    # Load a Delta table or any supported format
+    df1 = connector.load_table("abfss://<container>@<storage-account>.dfs.core.windows.net/<path-to-your-data>")
+    
+    # Load another DataFrame
+    df2 = connector.load_table("abfss://<container>@<storage-account>.dfs.core.windows.net/<another-path-to-your-data>")
+    
+    # Filter the first DataFrame
+    filtered_df = connector.filter_data(df1, "some_column > 100")
+    
+    # Join the two DataFrames
+    joined_df = connector.join_dataframes(filtered_df, df2, "df1.id = df2.id")
+    
+    # Optionally, perform a SQL join
+    sql_joined_df = connector.join_with_query(filtered_df, df2, "SELECT df1.*, df2.* FROM df1 JOIN df2 ON df1.id = df2.id")
+    
+    # Show the result
+    sql_joined_df.show()
+    
+    # Stop the Spark session
+    connector.stop()
