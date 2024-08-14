@@ -221,7 +221,7 @@
         "kind": 6,
         "importPath": "azure_table_operations",
         "description": "azure_table_operations",
-        "peekOfCode": "class DatabricksSparkConnector:\n    def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,\n                 client_id: str = None, client_secret: str = None, tenant_id: str = None):\n        \"\"\"\n        Initializes the DatabricksConnector class with service principal credentials.\n        Args:\n            databricks_host (str, optional): The Databricks workspace URL.\n            databricks_cluster_id (str, optional): The ID of the Databricks cluster to connect to.\n            client_id (str, optional): The client ID of the Azure AD service principal.\n            client_secret (str, optional): The client secret of the Azure AD service principal.",
+        "peekOfCode": "class DatabricksSparkConnector:\n    def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,\n                 client_id: str = None, client_secret: str = None, tenant_id: str = None,\n                 storage_account_name: str = None, storage_account_key: str = None):\n        \"\"\"\n        Initializes the DatabricksConnector class with service principal credentials and storage account information.\n        Args:\n            databricks_host (str, optional): The Databricks workspace URL.\n            databricks_cluster_id (str, optional): The ID of the Databricks cluster to connect to.\n            client_id (str, optional): The client ID of the Azure AD service principal.",
         "detail": "azure_table_operations",
         "documentation": {}
     },

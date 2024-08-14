@@ -4,10 +4,12 @@ from pyspark.sql import SparkSession
 from azure.identity import ClientSecretCredential
 
 class DatabricksSparkConnector:
+    
     def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,
-                 client_id: str = None, client_secret: str = None, tenant_id: str = None):
+                 client_id: str = None, client_secret: str = None, tenant_id: str = None,
+                 storage_account_name: str = None, storage_account_key: str = None):
         """
-        Initializes the DatabricksConnector class with service principal credentials.
+        Initializes the DatabricksConnector class with service principal credentials and storage account information.
 
         Args:
             databricks_host (str, optional): The Databricks workspace URL.
@@ -15,21 +17,32 @@ class DatabricksSparkConnector:
             client_id (str, optional): The client ID of the Azure AD service principal.
             client_secret (str, optional): The client secret of the Azure AD service principal.
             tenant_id (str, optional): The tenant ID of the Azure AD service principal.
+            storage_account_name (str, optional): The name of the Azure storage account.
+            storage_account_key (str, optional): The access key for the Azure storage account.
         """
         self.databricks_host = databricks_host
         self.databricks_cluster_id = databricks_cluster_id
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
+        self.storage_account_name = storage_account_name
+        self.storage_account_key = storage_account_key
 
-        if databricks_host and databricks_cluster_id:
-            # Local environment with Databricks Connect
-            self._setup_local_databricks_session()
+        self.spark = self._initialize_spark_session()
+        self._configure_azure_storage_access()
+
+    def _is_running_on_databricks(self) -> bool:
+        """Determines if the code is running on Databricks."""
+        return 'DATABRICKS_RUNTIME_VERSION' in os.environ
+
+    def _initialize_spark_session(self) -> SparkSession:
+        """Initializes the Spark or Databricks session depending on the environment."""
+        if self._is_running_on_databricks():
+            return SparkSession.builder.getOrCreate()
         else:
-            # On Databricks cluster
-            self._setup_databricks_session()
+            return self._setup_local_databricks_session()
 
-    def _setup_local_databricks_session(self) -> None:
+    def _setup_local_databricks_session(self) -> DatabricksSession:
         """Sets up a Databricks session for local development using Databricks Connect with service principal credentials."""
         # Authenticate using the service principal credentials
         credential = ClientSecretCredential(tenant_id=self.tenant_id, client_id=self.client_id, client_secret=self.client_secret)
@@ -37,19 +50,25 @@ class DatabricksSparkConnector:
         # Get the access token for Azure AD
         token = credential.get_token("https://management.azure.com/.default").token
 
-        # Configure Databricks Connect
+        # Set the environment variables required by Databricks Connect
         os.environ['DATABRICKS_HOST'] = self.databricks_host
         os.environ['DATABRICKS_TOKEN'] = token
         os.environ['DATABRICKS_CLUSTER_ID'] = self.databricks_cluster_id
 
-        # Initialize DatabricksSession for Databricks Connect
-        self.session = DatabricksSession.builder \
-            .appName("DatabricksConnector") \
-            .config("spark.databricks.service.client.enabled", "true") \
-            .config("spark.databricks.service.client.username", self.client_id) \
-            .config("spark.databricks.service.client.password", token) \
-            .config("spark.databricks.service.tenantId", self.tenant_id) \
-            .getOrCreate()
+        # Initialize and return DatabricksSession
+        return DatabricksSession.builder.getOrCreate()
+
+    def _configure_azure_storage_access(self) -> None:
+        """Configures the Spark session for accessing Azure storage using service principal credentials."""
+        self.spark.conf.set(f'fs.azure.account.auth.type.{self.storage_account_name}.dfs.core.windows.net', 'OAuth')
+        self.spark.conf.set(f'fs.azure.account.oauth.provider.type.{self.storage_account_name}.dfs.core.windows.net',
+                            'org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider')
+        self.spark.conf.set(f'fs.azure.account.oauth2.client.id.{self.storage_account_name}.dfs.core.windows.net', self.client_id)
+        self.spark.conf.set(f'fs.azure.account.oauth2.client.secret.{self.storage_account_name}.dfs.core.windows.net', self.client_secret)
+        self.spark.conf.set(f'fs.azure.account.oauth2.client.endpoint.{self.storage_account_name}.dfs.core.windows.net',
+                            f'https://login.microsoftonline.com/{self.tenant_id}/oauth2/token')
+
+
     def load_table(self, path: str, format: str = "delta", options: dict = None):
         """Loads a table from the specified path."""
         if options is None:
