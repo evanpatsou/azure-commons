@@ -4,64 +4,52 @@ from pyspark.sql import SparkSession
 from azure.identity import ClientSecretCredential
 
 class DatabricksSparkConnector:
-    def __init__(self, tenant_id: str, client_id: str, client_secret: str, 
-                 storage_account_name: str, databricks_workspace_url: str, cluster_id: str):
-        self.tenant_id = tenant_id
+    def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,
+                 client_id: str = None, client_secret: str = None, tenant_id: str = None):
+        """
+        Initializes the DatabricksConnector class with service principal credentials.
+
+        Args:
+            databricks_host (str, optional): The Databricks workspace URL.
+            databricks_cluster_id (str, optional): The ID of the Databricks cluster to connect to.
+            client_id (str, optional): The client ID of the Azure AD service principal.
+            client_secret (str, optional): The client secret of the Azure AD service principal.
+            tenant_id (str, optional): The tenant ID of the Azure AD service principal.
+        """
+        self.databricks_host = databricks_host
+        self.databricks_cluster_id = databricks_cluster_id
         self.client_id = client_id
         self.client_secret = client_secret
-        self.storage_account_name = storage_account_name
-        self.databricks_workspace_url = databricks_workspace_url
-        self.cluster_id = cluster_id
-        self.is_running_on_databricks = 'DATABRICKS_RUNTIME_VERSION' in os.environ
-        self.spark = self._initialize_spark()
+        self.tenant_id = tenant_id
 
-    def _initialize_spark(self) -> SparkSession:
-        if self.is_running_on_databricks:
-            print("Running on Databricks, using the existing Spark session.")
-            spark = SparkSession.builder.appName("DatabricksSparkConnector").getOrCreate()
+        if databricks_host and databricks_cluster_id:
+            # Local environment with Databricks Connect
+            self._setup_local_spark_session()
         else:
-            print("Running locally, connecting to Databricks cluster.")
-            # Authenticate to Azure to get a token
-            credential = ClientSecretCredential(
-                tenant_id=self.tenant_id,
-                client_id=self.client_id,
-                client_secret=self.client_secret
-            )
-            token = credential.get_token("https://management.azure.com/.default").token
-            
-            # Prepare headers for Databricks REST API
-            headers = {
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json',
-            }
+            # On Databricks cluster
+            self._setup_databricks_spark_session()
 
-            # Check if the cluster is running
-            response = requests.get(f'{self.databricks_workspace_url}/api/2.0/clusters/get?cluster_id={self.cluster_id}', 
-                                    headers=headers)
-            cluster_info = response.json()
+    def _setup_local_spark_session(self) -> None:
+        """Sets up a Spark session for local development using Databricks Connect with service principal credentials."""
+        # Authenticate using the service principal credentials
+        credential = ClientSecretCredential(tenant_id=self.tenant_id, client_id=self.client_id, client_secret=self.client_secret)
+        
+        # Get the access token for Azure AD
+        token = credential.get_token("https://management.azure.com/.default").token
 
-            if response.status_code == 200:
-                print(f"Cluster status: {cluster_info['state']}")
-                if cluster_info['state'] != 'RUNNING':
-                    print("Starting cluster...")
-                    start_response = requests.post(f'{self.databricks_workspace_url}/api/2.0/clusters/start', 
-                                                   headers=headers, json={"cluster_id": self.cluster_id})
-                    if start_response.status_code != 200:
-                        raise Exception(f"Failed to start cluster: {start_response.text}")
-                    else:
-                        print("Cluster started successfully.")
-                else:
-                    print("Cluster is already running.")
-            else:
-                raise Exception(f"Failed to get cluster info: {response.text}")
+        # Configure Databricks Connect
+        os.environ['DATABRICKS_HOST'] = self.databricks_host
+        os.environ['DATABRICKS_TOKEN'] = token
+        os.environ['DATABRICKS_CLUSTER_ID'] = self.databricks_cluster_id
 
-            # Create a Spark session
-            spark = SparkSession.builder \
-                .appName("DatabricksSparkConnector") \
-                .config("spark.master", f"spark://{self.cluster_id}:7077") \
-                .getOrCreate()
-            
-        return spark
+        # Initialize Spark Session for Databricks Connect
+        self.spark = SparkSession.builder \
+            .appName("DatabricksConnector") \
+            .config("spark.databricks.service.client.enabled", "true") \
+            .config("spark.databricks.service.client.username", self.client_id) \
+            .config("spark.databricks.service.client.password", token) \
+            .config("spark.databricks.service.tenantId", self.tenant_id) \
+            .getOrCreate()
 
     def load_table(self, path: str, format: str = "delta", options: dict = None):
         """Loads a table from the specified path."""
@@ -79,7 +67,6 @@ class DatabricksSparkConnector:
         """Joins two DataFrames based on the specified join condition."""
         print(f"Joining DataFrames with condition: {join_condition} and join type: {join_type}")
         return df1.join(df2, join_condition, join_type)
-
     def join_with_query(self, df1, df2, query: str):
         """Joins two DataFrames using a SQL query."""
         df1.createOrReplaceTempView("df1")
