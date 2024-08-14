@@ -24,13 +24,13 @@ class DatabricksSparkConnector:
 
         if databricks_host and databricks_cluster_id:
             # Local environment with Databricks Connect
-            self._setup_local_spark_session()
+            self._setup_local_databricks_session()
         else:
             # On Databricks cluster
-            self._setup_databricks_spark_session()
+            self._setup_databricks_session()
 
-    def _setup_local_spark_session(self) -> None:
-        """Sets up a Spark session for local development using Databricks Connect with service principal credentials."""
+    def _setup_local_databricks_session(self) -> None:
+        """Sets up a Databricks session for local development using Databricks Connect with service principal credentials."""
         # Authenticate using the service principal credentials
         credential = ClientSecretCredential(tenant_id=self.tenant_id, client_id=self.client_id, client_secret=self.client_secret)
         
@@ -42,15 +42,14 @@ class DatabricksSparkConnector:
         os.environ['DATABRICKS_TOKEN'] = token
         os.environ['DATABRICKS_CLUSTER_ID'] = self.databricks_cluster_id
 
-        # Initialize Spark Session for Databricks Connect
-        self.spark = SparkSession.builder \
+        # Initialize DatabricksSession for Databricks Connect
+        self.session = DatabricksSession.builder \
             .appName("DatabricksConnector") \
             .config("spark.databricks.service.client.enabled", "true") \
             .config("spark.databricks.service.client.username", self.client_id) \
             .config("spark.databricks.service.client.password", token) \
             .config("spark.databricks.service.tenantId", self.tenant_id) \
             .getOrCreate()
-
     def load_table(self, path: str, format: str = "delta", options: dict = None):
         """Loads a table from the specified path."""
         if options is None:
