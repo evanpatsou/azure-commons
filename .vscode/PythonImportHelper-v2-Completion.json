@@ -1,11 +1,28 @@
 [
     {
-        "label": "unittest",
+        "label": "logging",
         "kind": 6,
         "isExtraImport": true,
-        "importPath": "unittest",
-        "description": "unittest",
-        "detail": "unittest",
+        "importPath": "logging",
+        "description": "logging",
+        "detail": "logging",
+        "documentation": {}
+    },
+    {
+        "label": "json",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "json",
+        "description": "json",
+        "detail": "json",
+        "documentation": {}
+    },
+    {
+        "label": "SparkSession",
+        "importPath": "pyspark.sql",
+        "description": "pyspark.sql",
+        "isExtraImport": true,
+        "detail": "pyspark.sql",
         "documentation": {}
     },
     {
@@ -25,27 +42,36 @@
         "documentation": {}
     },
     {
-        "label": "SparkSession",
-        "importPath": "pyspark.sql",
-        "description": "pyspark.sql",
+        "label": "col",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
         "isExtraImport": true,
-        "detail": "pyspark.sql",
+        "detail": "pyspark.sql.functions",
         "documentation": {}
     },
     {
-        "label": "ReusedPySparkTestCase",
-        "importPath": "pyspark.testing.utils",
-        "description": "pyspark.testing.utils",
+        "label": "max",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
         "isExtraImport": true,
-        "detail": "pyspark.testing.utils",
+        "detail": "pyspark.sql.functions",
         "documentation": {}
     },
     {
-        "label": "MagicMock",
-        "importPath": "unittest.mock",
-        "description": "unittest.mock",
+        "label": "abs",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
         "isExtraImport": true,
-        "detail": "unittest.mock",
+        "detail": "pyspark.sql.functions",
+        "documentation": {}
+    },
+    {
+        "label": "unittest",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "unittest",
+        "description": "unittest",
+        "detail": "unittest",
         "documentation": {}
     },
     {
@@ -54,22 +80,6 @@
         "description": "unittest.mock",
         "isExtraImport": true,
         "detail": "unittest.mock",
-        "documentation": {}
-    },
-    {
-        "label": "patch",
-        "importPath": "unittest.mock",
-        "description": "unittest.mock",
-        "isExtraImport": true,
-        "detail": "unittest.mock",
-        "documentation": {}
-    },
-    {
-        "label": "AzureTableOperations",
-        "importPath": "azure_table_operations",
-        "description": "azure_table_operations",
-        "isExtraImport": true,
-        "detail": "azure_table_operations",
         "documentation": {}
     },
     {
@@ -110,15 +120,6 @@
         "description": "azure.storage.blob",
         "isExtraImport": true,
         "detail": "azure.storage.blob",
-        "documentation": {}
-    },
-    {
-        "label": "logging",
-        "kind": 6,
-        "isExtraImport": true,
-        "importPath": "logging",
-        "description": "logging",
-        "detail": "logging",
         "documentation": {}
     },
     {
@@ -181,11 +182,56 @@
         "documentation": {}
     },
     {
-        "label": "TestAzureTableOperations",
+        "label": "SparkInitializationError",
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class TestAzureTableOperations(ReusedPySparkTestCase):\n    def setUp(self):\n        super().setUp()  # Set up the Spark context for testing\n        self.credentials = MagicMock()  # Mock credentials\n        self.account_name = \"dummy_account\"\n        self.table_operations = AzureTableOperations(self.account_name, self.credentials)\n    def test_spark_session_initialization(self):\n        self.assertIsInstance(self.table_operations.spark, SparkSession)\n    def test_load_table_without_filters(self):\n        with patch.object(self.table_operations.spark.read, 'csv', return_value=self.spark.createDataFrame([], 'dummy_schema')) as mock_csv:",
+        "peekOfCode": "class SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, ",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "DataLoadError",
+        "kind": 6,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "class DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "DataSaveError",
+        "kind": 6,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "class DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "ConfigurationError",
+        "kind": 6,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "class ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "AzureTableOperations",
+        "kind": 6,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "class AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"\n        self.spark = None\n        self.enable_hive_support = enable_hive_support",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "logger = logging.getLogger(__name__)\n# Custom Exceptions\nclass SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
