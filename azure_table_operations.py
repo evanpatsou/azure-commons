@@ -1,123 +1,385 @@
-import os
-import requests
-from pyspark.sql import SparkSession
-from azure.identity import ClientSecretCredential
+import logging
+import json
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import col, max as spark_max, abs as spark_abs
 
-class DatabricksSparkConnector:
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Custom Exceptions
+class SparkInitializationError(Exception):
+    pass
+
+class DataLoadError(Exception):
+    pass
+
+class DataSaveError(Exception):
+    pass
+
+class ConfigurationError(Exception):
+    pass
+
+class TableOperationError(Exception):
+    pass
+
+class AzureTableOperations:
+    """Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, 
+    joining tables, running SQL queries, and performing date-related operations using PySpark."""
     
-    def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,
-                 client_id: str = None, client_secret: str = None, tenant_id: str = None,
-                 storage_account_name: str = None, storage_account_key: str = None):
+    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):
         """
-        Initializes the DatabricksConnector class with service principal credentials and storage account information.
+        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.
+        The Spark session is initialized during this process.
+        """
+        self.spark = None
+        self.enable_hive_support = enable_hive_support
+        self.spark_config = initial_spark_config if initial_spark_config else {}
+        self.initialize_spark()
+
+    def set_spark_config(self, config: dict):
+        """
+        Sets or updates Spark configurations.
 
         Args:
-            databricks_host (str, optional): The Databricks workspace URL.
-            databricks_cluster_id (str, optional): The ID of the Databricks cluster to connect to.
-            client_id (str, optional): The client ID of the Azure AD service principal.
-            client_secret (str, optional): The client secret of the Azure AD service principal.
-            tenant_id (str, optional): The tenant ID of the Azure AD service principal.
-            storage_account_name (str, optional): The name of the Azure storage account.
-            storage_account_key (str, optional): The access key for the Azure storage account.
+            config (dict): A dictionary of Spark configurations to set or update.
         """
-        self.databricks_host = databricks_host
-        self.databricks_cluster_id = databricks_cluster_id
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.tenant_id = tenant_id
-        self.storage_account_name = storage_account_name
-        self.storage_account_key = storage_account_key
+        self.spark_config.update(config)
+        logger.info("Updated Spark configuration.")
+        for key, value in config.items():
+            logger.info(f"{key} = {value}")
 
-        self.spark = self._initialize_spark_session()
-        self._configure_azure_storage_access()
-
-    def _is_running_on_databricks(self) -> bool:
-        """Determines if the code is running on Databricks."""
-        return 'DATABRICKS_RUNTIME_VERSION' in os.environ
-
-    def _initialize_spark_session(self) -> SparkSession:
-        """Initializes the Spark or Databricks session depending on the environment."""
-        if self._is_running_on_databricks():
-            return SparkSession.builder.getOrCreate()
-        else:
-            return self._setup_local_databricks_session()
-
-    def _setup_local_databricks_session(self) -> DatabricksSession:
-        """Sets up a Databricks session for local development using Databricks Connect with service principal credentials."""
-        # Authenticate using the service principal credentials
-        credential = ClientSecretCredential(tenant_id=self.tenant_id, client_id=self.client_id, client_secret=self.client_secret)
+    def load_spark_config_from_file(self, file_path: str):
+        """
+        Loads Spark configurations from a JSON file.
         
-        # Get the access token for Azure AD
-        token = credential.get_token("https://management.azure.com/.default").token
+        Args:
+            file_path (str): The path to the JSON file containing Spark configurations.
+        """
+        try:
+            with open(file_path, 'r') as f:
+                config = json.load(f)
+                self.set_spark_config(config)
+                logger.info(f"Loaded Spark configuration from {file_path}")
+        except Exception as e:
+            logger.error(f"Error loading Spark configuration from file: {e}")
+            raise ConfigurationError(f"Failed to load configuration from {file_path}: {str(e)}")
 
-        # Set the environment variables required by Databricks Connect
-        os.environ['DATABRICKS_HOST'] = self.databricks_host
-        os.environ['DATABRICKS_TOKEN'] = token
-        os.environ['DATABRICKS_CLUSTER_ID'] = self.databricks_cluster_id
+    def validate_config(self):
+        """
+        Validates the Spark configuration to ensure that all necessary parameters are set.
+        """
+        required_keys = ["fs.azure.account.auth.type", "fs.azure.account.oauth.provider.type", "fs.azure.account.oauth2.client.id", 
+                         "fs.azure.account.oauth2.client.secret", "fs.azure.account.oauth2.client.endpoint"]
+        missing_keys = [key for key in required_keys if key not in self.spark_config]
+        
+        if missing_keys:
+            raise ConfigurationError(f"Missing required Spark configurations: {', '.join(missing_keys)}")
+        logger.info("All required configurations are set.")
 
-        # Initialize and return DatabricksSession
-        return DatabricksSession.builder.getOrCreate()
+    def initialize_spark(self):
+        """
+        Initializes the Spark session with the current configuration.
+        """
+        try:
+            if self.spark is not None:
+                logger.info("Spark session already initialized.")
+                return
 
-    def _configure_azure_storage_access(self) -> None:
-        """Configures the Spark session for accessing Azure storage using service principal credentials."""
-        self.spark.conf.set(f'fs.azure.account.auth.type.{self.storage_account_name}.dfs.core.windows.net', 'OAuth')
-        self.spark.conf.set(f'fs.azure.account.oauth.provider.type.{self.storage_account_name}.dfs.core.windows.net',
-                            'org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider')
-        self.spark.conf.set(f'fs.azure.account.oauth2.client.id.{self.storage_account_name}.dfs.core.windows.net', self.client_id)
-        self.spark.conf.set(f'fs.azure.account.oauth2.client.secret.{self.storage_account_name}.dfs.core.windows.net', self.client_secret)
-        self.spark.conf.set(f'fs.azure.account.oauth2.client.endpoint.{self.storage_account_name}.dfs.core.windows.net',
-                            f'https://login.microsoftonline.com/{self.tenant_id}/oauth2/token')
+            self.validate_config()
 
+            builder = SparkSession.builder.appName("AzureTableOperations")
+            
+            if self.enable_hive_support:
+                builder = builder.enableHiveSupport()
+                
+            for key, value in self.spark_config.items():
+                builder = builder.config(key, value)
+                    
+            self.spark = builder.getOrCreate()
+            logger.info("Spark session initialized successfully with the following configurations:")
+            for key, value in self.spark.sparkContext.getConf().getAll():
+                logger.info(f"{key} = {value}")
+        except Exception as e:
+            logger.error(f"Error initializing Spark session: {e}")
+            raise SparkInitializationError(f"Failed to initialize Spark session: {str(e)}")
 
-    def load_table(self, path: str, format: str = "delta", options: dict = None):
-        """Loads a table from the specified path."""
-        if options is None:
-            options = {}
-        print(f"Loading data from {path} with format {format}")
-        return self.spark.read.format(format).options(**options).load(path)
+    def reinitialize_spark(self):
+        """
+        Reinitializes the Spark session with the current configuration. This method should be called if 
+        configurations are changed after the initial Spark session has been created.
+        """
+        if self.spark is not None:
+            logger.info("Stopping the existing Spark session.")
+            self.spark.stop()
+            self.spark = None
+        self.initialize_spark()
 
-    def filter_data(self, df, filter_query: str):
-        """Filters the DataFrame based on the given query."""
-        print(f"Filtering data with query: {filter_query}")
-        return df.filter(filter_query)
+    def load_data(self, path: str, format: str = "parquet") -> DataFrame:
+        """
+        Loads data from a specified path, which could be either abfss or local file system.
+        
+        Args:
+            path (str): The path to the data (can be abfss:// or local file system path).
+            format (str): The format of the data (e.g., 'parquet', 'csv'). Default is 'parquet'.
+        
+        Returns:
+            DataFrame: The loaded DataFrame.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            logger.info(f"Loading data from {path}...")
+            df = self.spark.read.format(format).load(path)
+            logger.info("Data loaded successfully.")
+            return df
+        except Exception as e:
+            logger.error(f"Error loading data from {path}: {e}")
+            raise DataLoadError(f"Failed to load data from {path}: {str(e)}")
 
-    def join_dataframes(self, df1, df2, join_condition: str, join_type: str = "inner"):
-        """Joins two DataFrames based on the specified join condition."""
-        print(f"Joining DataFrames with condition: {join_condition} and join type: {join_type}")
-        return df1.join(df2, join_condition, join_type)
-    def join_with_query(self, df1, df2, query: str):
-        """Joins two DataFrames using a SQL query."""
-        df1.createOrReplaceTempView("df1")
-        df2.createOrReplaceTempView("df2")
-        print(f"Joining DataFrames with SQL query: {query}")
-        return self.spark.sql(query)
+    def save_data(self, df: DataFrame, path: str, format: str = "parquet", mode: str = "overwrite"):
+        """
+        Saves a DataFrame to a specified path, which could be either abfss or local file system.
+        
+        Args:
+            df (DataFrame): The DataFrame to save.
+            path (str): The destination path (can be abfss:// or local file system path).
+            format (str): The format to save the data (e.g., 'parquet', 'csv'). Default is 'parquet'.
+            mode (str): The write mode (e.g., 'overwrite', 'append'). Default is 'overwrite'.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            logger.info(f"Saving DataFrame to {path} as {format} with mode {mode}...")
+            df.write.format(format).mode(mode).save(path)
+            logger.info("DataFrame saved successfully.")
+        except Exception as e:
+            logger.error(f"Error saving DataFrame to {path}: {e}")
+            raise DataSaveError(f"Failed to save data to {path}: {str(e)}")
 
-    def stop(self):
-        """Stops the Spark session."""
-        print("Stopping the Spark session.")
-        self.spark.stop()
+    def create_catalog_if_not_exists(self, catalog: str):
+        """
+        Creates a catalog (database) if it doesn't exist.
 
-# Example usage:
-if __name__ == "__main__":
-    connector = DatabricksSparkConnector(
-        tenant_id="your-tenant-id",
-        client_id="your-client-id",
-        client_secret="your-client-secret",
-        storage_account_name="your-storage-account-name",
-        databricks_workspace_url="https://your-databricks-instance.azuredatabricks.net",
-        cluster_id="your-existing-cluster-id"
-    )
+        Args:
+            catalog (str): The name of the catalog (database) to create.
+        """
+        try:
+            logger.info(f"Checking if catalog '{catalog}' exists...")
+            if not self.spark.catalog.databaseExists(catalog):
+                logger.info(f"Catalog '{catalog}' does not exist. Creating it...")
+                self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}")
+                logger.info(f"Catalog '{catalog}' created successfully.")
+            else:
+                logger.info(f"Catalog '{catalog}' already exists.")
+        except Exception as e:
+            logger.error(f"Error creating catalog '{catalog}': {e}")
+            raise SparkInitializationError(f"Failed to create catalog {catalog}: {str(e)}")
 
-    # Example: Load a table, filter, and join
-    df1 = connector.load_table("abfss://<container>@<storage-account>.dfs.core.windows.net/<path-to-your-data>")
-    df2 = connector.load_table("abfss://<container>@<storage-account>.dfs.core.windows.net/<another-path-to-your-data>")
-    
-    filtered_df = connector.filter_data(df1, "some_column > 100")
-    joined_df = connector.join_dataframes(filtered_df, df2, "df1.id = df2.id")
-    
-    # SQL join example
-    sql_joined_df = connector.join_with_query(filtered_df, df2, "SELECT df1.*, df2.* FROM df1 JOIN df2 ON df1.id = df2.id")
-    
-    sql_joined_df.show()
-    
-    connector.stop()
+    def read_from_catalog(self, table_name: str, catalog: str = None) -> DataFrame:
+        """
+        Reads a table from the local catalog (e.g., Hive) into a DataFrame.
+        
+        Args:
+            table_name (str): The name of the table to read.
+            catalog (str): The catalog or database name (optional).
+        
+        Returns:
+            DataFrame: The DataFrame containing the table data.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Reading table from catalog: {full_table_name}")
+            df = self.spark.table(full_table_name)
+            logger.info(f"Table {full_table_name} read successfully.")
+            return df
+        except Exception as e:
+            logger.error(f"Error reading table from catalog: {e}")
+            raise DataLoadError(f"Failed to read table {full_table_name}: {str(e)}")
+
+    def save_to_catalog(self, df: DataFrame, table_name: str, mode: str = "overwrite", catalog: str = None):
+        """
+        Stores a DataFrame in an external catalog (e.g., Hive).
+        
+        Args:
+            df (DataFrame): The DataFrame to store.
+            table_name (str): The name of the table to store the data in.
+            mode (str): The write mode (e.g., "overwrite", "append"). Default is "overwrite".
+            catalog (str): The catalog or database name (optional).
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Storing DataFrame to catalog: {full_table_name} with mode: {mode}")
+            df.write.mode(mode).saveAsTable(full_table_name)
+            logger.info(f"DataFrame stored to catalog: {full_table_name} successfully.")
+        except Exception as e:
+            logger.error(f"Error storing DataFrame to catalog: {e}")
+            raise DataSaveError(f"Failed to store DataFrame to catalog {full_table_name}: {str(e)}")
+
+    def create_table_from_dataframe(self, df: DataFrame, table_name: str, catalog: str = None, mode: str = "overwrite"):
+        """
+        Creates a table in the catalog from a DataFrame.
+        
+        Args:
+            df (DataFrame): The DataFrame to be used as the table data.
+            table_name (str): The name of the table to create.
+            catalog (str): The catalog or database name (optional).
+            mode (str): The write mode (e.g., "overwrite", "append"). Default is "overwrite".
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Creating table {full_table_name} with mode {mode}...")
+            df.write.mode(mode).saveAsTable(full_table_name)
+            logger.info(f"Table {full_table_name} created successfully.")
+        except Exception as e:
+            logger.error(f"Error creating table {full_table_name}: {e}")
+            raise TableOperationError(f"Failed to create table {full_table_name}: {str(e)}")
+
+    def delete_table(self, table_name: str, catalog: str = None):
+        """
+        Deletes a table from the catalog.
+        
+        Args:
+            table_name (str): The name of the table to delete.
+            catalog (str): The catalog or database name (optional).
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Deleting table {full_table_name} from catalog...")
+            self.spark.sql(f"DROP TABLE IF EXISTS {full_table_name}")
+            logger.info(f"Table {full_table_name} deleted successfully.")
+        except Exception as e:
+            logger.error(f"Error deleting table {full_table_name}: {e}")
+            raise TableOperationError(f"Failed to delete table {full_table_name}: {str(e)}")
+
+    def query_spark_dataframe(self, df: DataFrame, query: str) -> DataFrame:
+        """
+        Runs an SQL query against a Spark DataFrame.
+
+        Args:
+            df (DataFrame): The DataFrame to query.
+            query (str): The SQL query to execute.
+
+        Returns:
+            DataFrame: The result of the query as a DataFrame.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            # Use the DataFrame as a temporary view to run SQL queries on it
+            df.createOrReplaceTempView("temp_view")
+            logger.info(f"Running query on DataFrame: {query}")
+            result_df = self.spark.sql(query.replace("temp_table", "temp_view"))
+            logger.info("Query executed successfully on DataFrame.")
+            return result_df
+        except Exception as e:
+            logger.error(f"Error querying DataFrame: {e}")
+            raise TableOperationError(f"Failed to query DataFrame: {str(e)}")
+
+    def join_tables(self, df1: DataFrame, df2: DataFrame, join_column: str, how: str = 'inner') -> DataFrame:
+        """Joins two DataFrames on a specified column."""
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            logger.info(f"Joining tables on column '{join_column}' with '{how}' join...")
+            result_df = df1.join(df2, on=join_column, how=how)
+            logger.info("Tables joined successfully.")
+            return result_df
+        except Exception as e:
+            logger.error(f"Error joining tables: {e}")
+            raise DataLoadError(f"Failed to join tables on column {join_column}: {str(e)}")
+
+    def run_query(self, query: str) -> DataFrame:
+        """
+        Runs an SQL query against the loaded data.
+        
+        Args:
+            query (str): The SQL query to execute.
+        
+        Returns:
+            DataFrame: The result of the query as a DataFrame.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            logger.info(f"Running query: {query}")
+            df = self.spark.sql(query)
+            logger.info("Query executed successfully.")
+            return df
+        except Exception as e:
+            logger.error(f"Error running query: {e}")
+            raise DataLoadError(f"Failed to execute query: {str(e)}")
+
+    def find_closest_date(self, df: DataFrame, date_column: str, target_date: str) -> DataFrame:
+        """
+        Finds the row with the closest date to the target date.
+        
+        Args:
+            df (DataFrame): The DataFrame containing the data.
+            date_column (str): The name of the date column.
+            target_date (str): The target date to find the closest match.
+        
+        Returns:
+            DataFrame: The DataFrame containing the row with the closest date.
+        """
+        try:
+            logger.info(f"Finding closest date to '{target_date}' in column '{date_column}'...")
+            df = df.withColumn("date_diff", spark_abs(col(date_column).cast("timestamp") - col("timestamp").cast("timestamp")))
+            closest_date_df = df.orderBy("date_diff").limit(1)
+            logger.info("Closest date found successfully.")
+            return closest_date_df
+        except Exception as e:
+            logger.error(f"Error finding closest date: {e}")
+            raise DataLoadError(f"Failed to find closest date for target {target_date}: {str(e)}")
+
+    def get_latest_date(self, df: DataFrame, id_column: str, date_column: str, num_partitions: int = None) -> DataFrame:
+        """
+        Retrieves the latest date for each ID, optimized with partitioning if required.
+        
+        Args:
+            df (DataFrame): The DataFrame containing the data.
+            id_column (str): The name of the ID column.
+            date_column (str): The name of the date column.
+            num_partitions (int): The number of partitions to use for the operation (optional).
+        
+        Returns:
+            DataFrame: The DataFrame containing the latest date for each ID.
+        """
+        try:
+            logger.info(f"Getting the latest date for each ID in column '{date_column}'...")
+            
+            if num_partitions:
+                df = df.repartition(num_partitions, id_column)
+            
+            latest_date_df = df.groupBy(id_column).agg(spark_max(col(date_column)).alias("latest_date"))
+            logger.info("Latest date retrieved successfully.")
+            return latest_date_df
+        except Exception as e:
+            logger.error(f"Error getting the latest date: {e}")
+            raise DataLoadError(f"Failed to get latest date for column {date_column}: {str(e)}")

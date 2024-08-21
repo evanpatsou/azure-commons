@@ -20,9 +20,12 @@ class DataSaveError(Exception):
 class ConfigurationError(Exception):
     pass
 
+class TableOperationError(Exception):
+    pass
+
 class AzureTableOperations:
-    """Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, 
-    and performing date-related operations using PySpark."""
+    """Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, 
+    joining tables, running SQL queries, and performing date-related operations using PySpark."""
     
     def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):
         """
@@ -146,13 +149,34 @@ class AzureTableOperations:
             mode (str): The write mode (e.g., 'overwrite', 'append'). Default is 'overwrite'.
         """
         try:
-           
+            if self.spark is None:
+                self.initialize_spark()
+                
             logger.info(f"Saving DataFrame to {path} as {format} with mode {mode}...")
             df.write.format(format).mode(mode).save(path)
             logger.info("DataFrame saved successfully.")
         except Exception as e:
             logger.error(f"Error saving DataFrame to {path}: {e}")
             raise DataSaveError(f"Failed to save data to {path}: {str(e)}")
+
+    def create_catalog_if_not_exists(self, catalog: str):
+        """
+        Creates a catalog (database) if it doesn't exist.
+
+        Args:
+            catalog (str): The name of the catalog (database) to create.
+        """
+        try:
+            logger.info(f"Checking if catalog '{catalog}' exists...")
+            if not self.spark.catalog.databaseExists(catalog):
+                logger.info(f"Catalog '{catalog}' does not exist. Creating it...")
+                self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}")
+                logger.info(f"Catalog '{catalog}' created successfully.")
+            else:
+                logger.info(f"Catalog '{catalog}' already exists.")
+        except Exception as e:
+            logger.error(f"Error creating catalog '{catalog}': {e}")
+            raise SparkInitializationError(f"Failed to create catalog {catalog}: {str(e)}")
 
     def read_from_catalog(self, table_name: str, catalog: str = None) -> DataFrame:
         """
@@ -168,6 +192,9 @@ class AzureTableOperations:
         try:
             if self.spark is None:
                 self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
                 
             full_table_name = f"{catalog}.{table_name}" if catalog else table_name
             logger.info(f"Reading table from catalog: {full_table_name}")
@@ -191,6 +218,9 @@ class AzureTableOperations:
         try:
             if self.spark is None:
                 self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
                 
             full_table_name = f"{catalog}.{table_name}" if catalog else table_name
             logger.info(f"Storing DataFrame to catalog: {full_table_name} with mode: {mode}")
@@ -199,6 +229,76 @@ class AzureTableOperations:
         except Exception as e:
             logger.error(f"Error storing DataFrame to catalog: {e}")
             raise DataSaveError(f"Failed to store DataFrame to catalog {full_table_name}: {str(e)}")
+
+    def create_table_from_dataframe(self, df: DataFrame, table_name: str, catalog: str = None, mode: str = "overwrite"):
+        """
+        Creates a table in the catalog from a DataFrame.
+        
+        Args:
+            df (DataFrame): The DataFrame to be used as the table data.
+            table_name (str): The name of the table to create.
+            catalog (str): The catalog or database name (optional).
+            mode (str): The write mode (e.g., "overwrite", "append"). Default is "overwrite".
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            if catalog:
+                self.create_catalog_if_not_exists(catalog)
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Creating table {full_table_name} with mode {mode}...")
+            df.write.mode(mode).saveAsTable(full_table_name)
+            logger.info(f"Table {full_table_name} created successfully.")
+        except Exception as e:
+            logger.error(f"Error creating table {full_table_name}: {e}")
+            raise TableOperationError(f"Failed to create table {full_table_name}: {str(e)}")
+
+    def delete_table(self, table_name: str, catalog: str = None):
+        """
+        Deletes a table from the catalog.
+        
+        Args:
+            table_name (str): The name of the table to delete.
+            catalog (str): The catalog or database name (optional).
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+                
+            full_table_name = f"{catalog}.{table_name}" if catalog else table_name
+            logger.info(f"Deleting table {full_table_name} from catalog...")
+            self.spark.sql(f"DROP TABLE IF EXISTS {full_table_name}")
+            logger.info(f"Table {full_table_name} deleted successfully.")
+        except Exception as e:
+            logger.error(f"Error deleting table {full_table_name}: {e}")
+            raise TableOperationError(f"Failed to delete table {full_table_name}: {str(e)}")
+
+    def query_spark_dataframe(self, df: DataFrame, query: str) -> DataFrame:
+        """
+        Runs an SQL query against a Spark DataFrame.
+
+        Args:
+            df (DataFrame): The DataFrame to query.
+            query (str): The SQL query to execute.
+
+        Returns:
+            DataFrame: The result of the query as a DataFrame.
+        """
+        try:
+            if self.spark is None:
+                self.initialize_spark()
+
+            # Use the DataFrame as a temporary view to run SQL queries on it
+            df.createOrReplaceTempView("temp_view")
+            logger.info(f"Running query on DataFrame: {query}")
+            result_df = self.spark.sql(query.replace("temp_table", "temp_view"))
+            logger.info("Query executed successfully on DataFrame.")
+            return result_df
+        except Exception as e:
+            logger.error(f"Error querying DataFrame: {e}")
+            raise TableOperationError(f"Failed to query DataFrame: {str(e)}")
 
     def join_tables(self, df1: DataFrame, df2: DataFrame, join_column: str, how: str = 'inner') -> DataFrame:
         """Joins two DataFrames on a specified column."""
@@ -283,35 +383,3 @@ class AzureTableOperations:
         except Exception as e:
             logger.error(f"Error getting the latest date: {e}")
             raise DataLoadError(f"Failed to get latest date for column {date_column}: {str(e)}")
-
-# Example usage
-if __name__ == "__main__":
-    # Initialize the class with initial Spark configurations
-    operations = AzureTableOperations(enable_hive_support=True)
-
-    # Set additional Spark configurations
-    operations.set_spark_config({
-        "fs.azure.account.auth.type": "OAuth",
-        "fs.azure.account.oauth.provider.type": "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
-        "fs.azure.account.oauth2.client.id": "<client_id>",
-        "fs.azure.account.oauth2.client.secret": "<client_secret>",
-        "fs.azure.account.oauth2.client.endpoint": "https://login.microsoftonline.com/<tenant_id>/oauth2/token"
-    })
-
-    # Load data from abfss
-    df_abfss = operations.load_data("abfss://<container>@<storage_account>.dfs.core.windows.net/<path_to_file>.parquet")
-    df_abfss.show()
-
-    # Save the DataFrame to abfss
-    operations.save_data(df_abfss, "abfss://<container>@<storage_account>.dfs.core.windows.net/<path_to_save>/")
-
-    # Read from a local catalog (e.g., Hive table)
-    df_catalog = operations.read_from_catalog("person_table", catalog="default")
-    df_catalog.show()
-
-    # Get the latest date for each ID
-    latest_df = operations.get_latest_date(df_catalog, id_column="id", date_column="date")
-    latest_df.show()
-
-    # Save the result back to the catalog
-    operations.save_to_catalog(latest_df, table_name="latest_person_dates", catalog="default")

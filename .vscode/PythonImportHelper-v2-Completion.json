@@ -186,7 +186,7 @@
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, ",
+        "peekOfCode": "class SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
@@ -195,7 +195,7 @@
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):",
+        "peekOfCode": "class DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, ",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
@@ -204,7 +204,7 @@
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.",
+        "peekOfCode": "class DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
@@ -213,7 +213,16 @@
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class ConfigurationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"",
+        "peekOfCode": "class ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.",
+        "detail": "tests.test_azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "TableOperationError",
+        "kind": 6,
+        "importPath": "tests.test_azure_table_operations",
+        "description": "tests.test_azure_table_operations",
+        "peekOfCode": "class TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
@@ -222,7 +231,7 @@
         "kind": 6,
         "importPath": "tests.test_azure_table_operations",
         "description": "tests.test_azure_table_operations",
-        "peekOfCode": "class AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, joining tables, running SQL queries, \n    and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"\n        self.spark = None\n        self.enable_hive_support = enable_hive_support",
+        "peekOfCode": "class AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"\n        self.spark = None\n        self.enable_hive_support = enable_hive_support",
         "detail": "tests.test_azure_table_operations",
         "documentation": {}
     },
