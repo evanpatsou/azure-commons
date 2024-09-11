@@ -42,6 +42,38 @@
         "documentation": {}
     },
     {
+        "label": "DataFrame",
+        "importPath": "pyspark.sql",
+        "description": "pyspark.sql",
+        "isExtraImport": true,
+        "detail": "pyspark.sql",
+        "documentation": {}
+    },
+    {
+        "label": "col",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
+        "isExtraImport": true,
+        "detail": "pyspark.sql.functions",
+        "documentation": {}
+    },
+    {
+        "label": "max",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
+        "isExtraImport": true,
+        "detail": "pyspark.sql.functions",
+        "documentation": {}
+    },
+    {
+        "label": "abs",
+        "importPath": "pyspark.sql.functions",
+        "description": "pyspark.sql.functions",
+        "isExtraImport": true,
+        "detail": "pyspark.sql.functions",
+        "documentation": {}
+    },
+    {
         "label": "col",
         "importPath": "pyspark.sql.functions",
         "description": "pyspark.sql.functions",
@@ -107,37 +139,11 @@
         "documentation": {}
     },
     {
-        "label": "ClientSecretCredential",
-        "importPath": "azure.identity",
-        "description": "azure.identity",
-        "isExtraImport": true,
-        "detail": "azure.identity",
-        "documentation": {}
-    },
-    {
         "label": "BlobServiceClient",
         "importPath": "azure.storage.blob",
         "description": "azure.storage.blob",
         "isExtraImport": true,
         "detail": "azure.storage.blob",
-        "documentation": {}
-    },
-    {
-        "label": "os",
-        "kind": 6,
-        "isExtraImport": true,
-        "importPath": "os",
-        "description": "os",
-        "detail": "os",
-        "documentation": {}
-    },
-    {
-        "label": "requests",
-        "kind": 6,
-        "isExtraImport": true,
-        "importPath": "requests",
-        "description": "requests",
-        "detail": "requests",
         "documentation": {}
     },
     {
@@ -272,11 +278,65 @@
         "documentation": {}
     },
     {
-        "label": "DatabricksSparkConnector",
+        "label": "SparkInitializationError",
         "kind": 6,
         "importPath": "azure_table_operations",
         "description": "azure_table_operations",
-        "peekOfCode": "class DatabricksSparkConnector:\n    def __init__(self, databricks_host: str = None, databricks_cluster_id: str = None,\n                 client_id: str = None, client_secret: str = None, tenant_id: str = None,\n                 storage_account_name: str = None, storage_account_key: str = None):\n        \"\"\"\n        Initializes the DatabricksConnector class with service principal credentials and storage account information.\n        Args:\n            databricks_host (str, optional): The Databricks workspace URL.\n            databricks_cluster_id (str, optional): The ID of the Databricks cluster to connect to.\n            client_id (str, optional): The client ID of the Azure AD service principal.",
+        "peekOfCode": "class SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "DataLoadError",
+        "kind": 6,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "class DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, ",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "DataSaveError",
+        "kind": 6,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "class DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "ConfigurationError",
+        "kind": 6,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "class ConfigurationError(Exception):\n    pass\nclass TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "TableOperationError",
+        "kind": 6,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "class TableOperationError(Exception):\n    pass\nclass AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "AzureTableOperations",
+        "kind": 6,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "class AzureTableOperations:\n    \"\"\"Handles reading from and saving to abfss, reading and saving to catalog, creating and deleting tables, \n    joining tables, running SQL queries, and performing date-related operations using PySpark.\"\"\"\n    def __init__(self, enable_hive_support: bool = False, initial_spark_config: dict = None):\n        \"\"\"\n        Initializes the AzureTableOperations with optional Hive support and initial Spark configurations.\n        The Spark session is initialized during this process.\n        \"\"\"\n        self.spark = None\n        self.enable_hive_support = enable_hive_support",
+        "detail": "azure_table_operations",
+        "documentation": {}
+    },
+    {
+        "label": "logger",
+        "kind": 5,
+        "importPath": "azure_table_operations",
+        "description": "azure_table_operations",
+        "peekOfCode": "logger = logging.getLogger(__name__)\n# Custom Exceptions\nclass SparkInitializationError(Exception):\n    pass\nclass DataLoadError(Exception):\n    pass\nclass DataSaveError(Exception):\n    pass\nclass ConfigurationError(Exception):\n    pass",
         "detail": "azure_table_operations",
         "documentation": {}
     },
