@@ -1,12 +1,25 @@
-### Optimized SQL Schema Code
+# PostgreSQL Database Schema for Indicators, Attributes, and Runs
 
-To optimize the SQL schema, we can ensure that:
+This repository provides the SQL script to create a PostgreSQL database schema that tracks **indicators**, **attributes**, and their **values** across multiple **runs**, with data provided by various **vendors**. It supports **many-to-many** relationships between indicators and attributes, meaning an indicator can have multiple attributes, and an attribute can belong to multiple indicators.
 
-1. **Indexes**: Add indexes to frequently queried columns, such as foreign keys, to speed up queries.
-2. **Data Integrity**: Ensure proper constraints (such as `NOT NULL`, `UNIQUE`, etc.) for data consistency.
-3. **Naming Conventions**: Use clear and consistent naming conventions for tables, columns, and constraints.
+## Database Schema Overview
 
-Here’s the optimized SQL schema:
+The schema includes the following tables:
+
+1. **Vendors**: Represents the vendors providing data for specific indicators during runs.
+2. **Issuers**: Represents the organizations or entities responsible for tracking runs.
+3. **Runs**: Represents a single occurrence (a snapshot in time) where indicators are tracked.
+4. **Indicators**: Represents metrics or measurements that are tracked (e.g., temperature, humidity).
+5. **Attributes**: Represents specific attributes related to an indicator (e.g., max temperature, min temperature).
+6. **Indicator_Attributes**: A join table representing the many-to-many relationship between indicators and attributes.
+7. **Run_Indicators**: A table that connects indicators, runs, and vendors.
+8. **Indicator_Values**: Represents the actual value of an indicator recorded on a specific date.
+9. **Attribute_Values**: Represents the value of an attribute in a specific run.
+10. **Alternative_Indicators**: Represents alternative indicators for a given indicator.
+
+## PostgreSQL SQL Schema Initialization
+
+Here is the SQL script to initialize the database schema.
 
 ```sql
 -- Vendors Table
@@ -26,14 +39,14 @@ CREATE TABLE Runs (
     run_id SERIAL PRIMARY KEY,
     issuer_id INT NOT NULL REFERENCES Issuers(issuer_id) ON DELETE CASCADE,
     run_date DATE NOT NULL,
-    UNIQUE (issuer_id, run_date) -- Ensures a run by an issuer on a given date is unique
+    UNIQUE (issuer_id, run_date)
 );
 
 -- Indicators Table
 CREATE TABLE Indicators (
     indicator_id SERIAL PRIMARY KEY,
     indicator_name VARCHAR(255) NOT NULL,
-    UNIQUE (indicator_name) -- Ensure indicator names are unique
+    UNIQUE (indicator_name)
 );
 
 -- Run_Indicators Table
@@ -50,16 +63,21 @@ CREATE TABLE Indicator_Values (
     indicator_id INT NOT NULL REFERENCES Indicators(indicator_id) ON DELETE CASCADE,
     value_date DATE NOT NULL,
     value DECIMAL(10, 2) NOT NULL,
-    UNIQUE (indicator_id, value_date) -- Ensure no duplicate values for the same indicator on a date
+    UNIQUE (indicator_id, value_date)
 );
 
 -- Attributes Table
 CREATE TABLE Attributes (
     attribute_id SERIAL PRIMARY KEY,
     attribute_name VARCHAR(255) NOT NULL,
-    description TEXT,
+    description TEXT
+);
+
+-- Indicator_Attributes Table (Join Table for Many-to-Many relationship)
+CREATE TABLE Indicator_Attributes (
     indicator_id INT NOT NULL REFERENCES Indicators(indicator_id) ON DELETE CASCADE,
-    UNIQUE (attribute_name, indicator_id) -- Ensure each attribute name is unique per indicator
+    attribute_id INT NOT NULL REFERENCES Attributes(attribute_id) ON DELETE CASCADE,
+    PRIMARY KEY (indicator_id, attribute_id)
 );
 
 -- Attribute_Values Table
@@ -68,7 +86,7 @@ CREATE TABLE Attribute_Values (
     attribute_id INT NOT NULL REFERENCES Attributes(attribute_id) ON DELETE CASCADE,
     run_id INT NOT NULL REFERENCES Runs(run_id) ON DELETE CASCADE,
     value DECIMAL(10, 2) NOT NULL,
-    UNIQUE (attribute_id, run_id) -- Prevent duplicate attribute values for the same run
+    UNIQUE (attribute_id, run_id)
 );
 
 -- Alternative_Indicators Table
@@ -79,74 +97,148 @@ CREATE TABLE Alternative_Indicators (
 );
 ```
 
-### Optimizations:
-1. **`UNIQUE` Constraints**: I added `UNIQUE` constraints on relevant columns like `indicator_name`, `attribute_name` per `indicator_id`, `run_date` per `issuer_id`, and value uniqueness per date to avoid duplicates.
-2. **`ON DELETE CASCADE`**: If an `Issuer`, `Run`, `Indicator`, or `Vendor` is deleted, all associated data (like runs or values) will be removed automatically.
-3. **Indexes**: By default, primary keys and foreign keys create indexes, which will optimize your queries. If more performance is needed, custom indexing can be added based on usage patterns.
+## PlantUML Diagram
 
-### Common Queries You Might Need
+The PlantUML diagram visually represents the schema.
 
-#### 1. **Insert Data**
-Here’s how to insert basic data into the tables.
+```plantuml
+@startuml
+!define TABLE class
 
-##### Insert Issuer, Run, Vendor, Indicator:
+TABLE Vendors {
+    vendor_id INT PK
+    vendor_name VARCHAR(255)
+}
+
+TABLE Issuers {
+    issuer_id INT PK
+    issuer_name VARCHAR(255)
+}
+
+TABLE Runs {
+    run_id INT PK
+    issuer_id INT FK -- Issuer the run is associated with
+    run_date DATE
+}
+
+TABLE Indicators {
+    indicator_id INT PK
+    indicator_name VARCHAR(255)
+}
+
+TABLE Run_Indicators {
+    run_id INT FK
+    indicator_id INT FK
+    vendor_id INT FK
+    PRIMARY KEY (run_id, indicator_id, vendor_id)
+}
+
+TABLE Indicator_Values {
+    indicator_value_id INT PK
+    indicator_id INT FK
+    value_date DATE
+    value DECIMAL(10, 2)
+}
+
+TABLE Alternative_Indicators {
+    indicator_id INT FK
+    alternative_indicator_id INT FK
+    PRIMARY KEY (indicator_id, alternative_indicator_id)
+}
+
+TABLE Attributes {
+    attribute_id INT PK
+    attribute_name VARCHAR(255)
+    description TEXT
+}
+
+TABLE Indicator_Attributes {
+    indicator_id INT FK
+    attribute_id INT FK
+    PRIMARY KEY (indicator_id, attribute_id)
+}
+
+TABLE Attribute_Values {
+    attribute_value_id INT PK
+    attribute_id INT FK
+    run_id INT FK
+    value DECIMAL(10, 2)
+    FOREIGN KEY (attribute_id) REFERENCES Attributes(attribute_id)
+    FOREIGN KEY (run_id) REFERENCES Runs(run_id)
+}
+
+Issuers ||--o{ Runs : "Tracks runs for"
+Indicators ||--o{ Run_Indicators : "Is associated with a run"
+Vendors ||--o{ Run_Indicators : "Provides for"
+Runs ||--o{ Run_Indicators : "Has indicators"
+Indicators ||--o{ Indicator_Values : "Has values"
+Indicators ||--o{ Alternative_Indicators : "Is alternative to"
+Attributes ||--o{ Attribute_Values : "Has attribute values for runs"
+Attributes ||--o{ Indicator_Attributes : "Is associated with many indicators"
+Indicators ||--o{ Indicator_Attributes : "Has many attributes"
+Runs ||--o{ Attribute_Values : "Attribute values connected to run date"
+@enduml
+```
+
+## Example SQL Queries
+
+### 1. Inserting Data
+
+#### Insert into Issuers, Vendors, and Indicators:
+
 ```sql
--- Insert into Issuers
+-- Insert Issuer
 INSERT INTO Issuers (issuer_name) VALUES ('GlobalWeather');
 
--- Insert into Vendors
+-- Insert Vendor
 INSERT INTO Vendors (vendor_name) VALUES ('WeatherCorp');
 
--- Insert into Indicators
+-- Insert Indicator
 INSERT INTO Indicators (indicator_name) VALUES ('Temperature');
+```
 
--- Insert into Runs
+#### Insert into Runs and Associate Indicators and Vendors:
+
+```sql
+-- Insert a Run
 INSERT INTO Runs (issuer_id, run_date) VALUES (1, '2024-09-11');
-```
 
-#### 2. **Associate Indicators with Runs and Vendors**
-```sql
--- Associate a run with an indicator and vendor
+-- Associate a Run with an Indicator and Vendor
 INSERT INTO Run_Indicators (run_id, indicator_id, vendor_id)
-VALUES (1, 1, 1); -- (run_id = 1, indicator_id = 1, vendor_id = 1)
+VALUES (1, 1, 1);
 ```
 
-#### 3. **Insert Attribute and Attribute Values**
-```sql
--- Insert attributes for an indicator
-INSERT INTO Attributes (attribute_name, description, indicator_id)
-VALUES ('Max Temperature', 'Maximum temperature during the day', 1),
-       ('Min Temperature', 'Minimum temperature during the day', 1);
+#### Insert Attributes and Their Values:
 
--- Insert attribute values for a run
+```sql
+-- Insert Attributes for an Indicator
+INSERT INTO Attributes (attribute_name, description) 
+VALUES ('Max Temperature', 'Maximum temperature during the day'),
+       ('Min Temperature', 'Minimum temperature during the day');
+
+-- Associate Indicators with Attributes (Many-to-Many)
+INSERT INTO Indicator_Attributes (indicator_id, attribute_id) 
+VALUES (1, 1), (1, 2);
+
+-- Insert Attribute Values for a Run
 INSERT INTO Attribute_Values (attribute_id, run_id, value)
-VALUES (1, 1, 32.5), -- Max Temperature value
-       (2, 1, 15.2); -- Min Temperature value
+VALUES (1, 1, 32.5),  -- Max Temperature value
+       (2, 1, 15.2);  -- Min Temperature value
 ```
 
-#### 4. **Insert Indicator Values**
-```sql
--- Insert indicator values
-INSERT INTO Indicator_Values (indicator_id, value_date, value)
-VALUES (1, '2024-09-11', 25.3);
-```
+### 2. Retrieving Data
 
-#### 5. **Retrieve Runs and Their Associated Indicators**
-
-To find all indicators tracked in a specific run:
+#### Retrieve All Attributes for a Specific Indicator:
 
 ```sql
-SELECT r.run_id, r.run_date, i.indicator_name, v.vendor_name
-FROM Runs r
-JOIN Run_Indicators ri ON r.run_id = ri.run_id
-JOIN Indicators i ON ri.indicator_id = i.indicator_id
-JOIN Vendors v ON ri.vendor_id = v.vendor_id
-WHERE r.run_id = 1;
+SELECT i.indicator_name, a.attribute_name
+FROM Indicators i
+JOIN Indicator_Attributes ia ON i.indicator_id = ia.indicator_id
+JOIN Attributes a ON ia.attribute_id = a.attribute_id
+WHERE i.indicator_name = 'Temperature';
 ```
 
-#### 6. **Retrieve Attribute Values for a Run**
-
-To get all attribute values (such as Max and Min Temperature) recorded for a specific run:
+#### Retrieve Attribute Values for a Run:
 
 ```sql
 SELECT r.run_date, a.attribute_name, av.value
@@ -155,59 +247,3 @@ JOIN Attribute_Values av ON r.run_id = av.run_id
 JOIN Attributes a ON av.attribute_id = a.attribute_id
 WHERE r.run_id = 1;
 ```
-
-#### 7. **Retrieve Indicator Values Over Time**
-
-To track an indicator’s values over time (e.g., Temperature):
-
-```sql
-SELECT i.indicator_name, iv.value_date, iv.value
-FROM Indicators i
-JOIN Indicator_Values iv ON i.indicator_id = iv.indicator_id
-WHERE i.indicator_id = 1
-ORDER BY iv.value_date;
-```
-
-#### 8. **Get Alternative Indicators for a Given Indicator**
-
-If you want to find alternative indicators for a given indicator:
-
-```sql
-SELECT i1.indicator_name AS main_indicator, i2.indicator_name AS alternative_indicator
-FROM Alternative_Indicators ai
-JOIN Indicators i1 ON ai.indicator_id = i1.indicator_id
-JOIN Indicators i2 ON ai.alternative_indicator_id = i2.indicator_id
-WHERE i1.indicator_id = 1;
-```
-
-#### 9. **Get Vendor Providing Data for a Specific Indicator in a Run**
-
-If you need to know which vendor provided the data for a specific indicator during a specific run:
-
-```sql
-SELECT v.vendor_name, i.indicator_name, r.run_date
-FROM Vendors v
-JOIN Run_Indicators ri ON v.vendor_id = ri.vendor_id
-JOIN Indicators i ON ri.indicator_id = i.indicator_id
-JOIN Runs r ON ri.run_id = r.run_id
-WHERE r.run_id = 1 AND i.indicator_id = 1;
-```
-
-### Index Optimization
-
-For more performance optimization, we can manually add some indexes to improve query speed when retrieving or filtering data:
-
-```sql
--- Create indexes on foreign key columns for faster joins
-CREATE INDEX idx_attribute_values_run_id ON Attribute_Values(run_id);
-CREATE INDEX idx_attribute_values_attribute_id ON Attribute_Values(attribute_id);
-CREATE INDEX idx_run_indicators_run_id ON Run_Indicators(run_id);
-CREATE INDEX idx_run_indicators_indicator_id ON Run_Indicators(indicator_id);
-CREATE INDEX idx_indicator_values_indicator_id ON Indicator_Values(indicator_id);
-```
-
-These indexes should help with speeding up queries involving joins or filtering by `run_id`, `indicator_id`, and `attribute_id`.
-
-### Conclusion
-
-This optimized schema and query set should give you a highly efficient way to store and query your data. You can adapt the queries to fit specific business logic or analysis needs. Let me know if you need further adjustments!
