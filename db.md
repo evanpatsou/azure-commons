@@ -1,27 +1,36 @@
-# PostgreSQL Database Schema for Indicators, Attributes, and Runs
+## Overview
 
-This repository provides the SQL script to create a PostgreSQL database schema that tracks **indicators**, **attributes**, and their **values** across multiple **runs**, with data provided by various **vendors**. It supports **many-to-many** relationships between indicators and attributes, meaning an indicator can have multiple attributes, and an attribute can belong to multiple indicators.
+The schema is designed to track **indicators** (like temperature, humidity) and their associated **attributes** (e.g., max value, min value), which are recorded during **runs**. The data is provided by **vendors** and managed by **issuers**. The schema supports **many-to-many relationships** between **indicators** and **attributes** and partitions the `Indicator_Values` table by specific days to improve query performance.
 
-## Database Schema Overview
+### Schema Entities:
 
-The schema includes the following tables:
+1. **Vendors**: Represents companies providing indicator data (e.g., WeatherCorp).
+2. **Issuers**: Represents organizations responsible for tracking the runs (e.g., GlobalWeather).
+3. **Runs**: Represents a specific occurrence when indicators are tracked (e.g., a run on 2024-09-11).
+4. **Indicators**: Represents metrics being tracked (e.g., Temperature, Humidity).
+5. **Attributes**: Represents specific characteristics of an indicator (e.g., Max Temperature, Min Temperature).
+6. **Run_Indicators**: Establishes the relationship between runs and indicators.
+7. **Indicator_Values**: Stores the actual values of indicators provided by vendors, partitioned by specific days.
+8. **Attribute_Values**: Stores the values for specific attributes associated with runs and issuers.
+9. **Alternative_Indicators**: Defines alternative indicators for a given indicator (e.g., Celsius vs. Fahrenheit).
 
-1. **Vendors**: Represents the vendors providing data for specific indicators during runs.
-2. **Issuers**: Represents the organizations or entities responsible for tracking runs.
-3. **Runs**: Represents a single occurrence (a snapshot in time) where indicators are tracked.
-4. **Indicators**: Represents metrics or measurements that are tracked (e.g., temperature, humidity).
-5. **Attributes**: Represents specific attributes related to an indicator (e.g., max temperature, min temperature).
-6. **Indicator_Attributes**: A join table representing the many-to-many relationship between indicators and attributes.
-7. **Run_Indicators**: A table that connects indicators, runs, and vendors.
-8. **Indicator_Values**: Represents the actual value of an indicator recorded on a specific date.
-9. **Attribute_Values**: Represents the value of an attribute in a specific run.
-10. **Alternative_Indicators**: Represents alternative indicators for a given indicator.
+---
 
-## PostgreSQL SQL Schema Initialization
-
-Here is the SQL script to initialize the database schema.
+## SQL Initialization Script
 
 ```sql
+-- Drop existing tables to avoid conflicts
+DROP TABLE IF EXISTS Alternative_Indicators CASCADE;
+DROP TABLE IF EXISTS Indicator_Attributes CASCADE;
+DROP TABLE IF EXISTS Attribute_Values CASCADE;
+DROP TABLE IF EXISTS Run_Indicators CASCADE;
+DROP TABLE IF EXISTS Indicator_Values CASCADE;
+DROP TABLE IF EXISTS Attributes CASCADE;
+DROP TABLE IF EXISTS Indicators CASCADE;
+DROP TABLE IF EXISTS Runs CASCADE;
+DROP TABLE IF EXISTS Vendors CASCADE;
+DROP TABLE IF EXISTS Issuers CASCADE;
+
 -- Vendors Table
 CREATE TABLE Vendors (
     vendor_id SERIAL PRIMARY KEY,
@@ -37,9 +46,7 @@ CREATE TABLE Issuers (
 -- Runs Table
 CREATE TABLE Runs (
     run_id SERIAL PRIMARY KEY,
-    issuer_id INT NOT NULL REFERENCES Issuers(issuer_id) ON DELETE CASCADE,
-    run_date DATE NOT NULL,
-    UNIQUE (issuer_id, run_date)
+    run_date DATE NOT NULL
 );
 
 -- Indicators Table
@@ -53,18 +60,30 @@ CREATE TABLE Indicators (
 CREATE TABLE Run_Indicators (
     run_id INT NOT NULL REFERENCES Runs(run_id) ON DELETE CASCADE,
     indicator_id INT NOT NULL REFERENCES Indicators(indicator_id) ON DELETE CASCADE,
-    vendor_id INT NOT NULL REFERENCES Vendors(vendor_id) ON DELETE CASCADE,
-    PRIMARY KEY (run_id, indicator_id, vendor_id)
+    PRIMARY KEY (run_id, indicator_id)
 );
 
--- Indicator_Values Table
+-- Indicator_Values Table (Partitioned by specific days)
 CREATE TABLE Indicator_Values (
     indicator_value_id SERIAL PRIMARY KEY,
     indicator_id INT NOT NULL REFERENCES Indicators(indicator_id) ON DELETE CASCADE,
+    run_id INT NOT NULL REFERENCES Runs(run_id) ON DELETE CASCADE,
+    issuer_id INT NOT NULL REFERENCES Issuers(issuer_id) ON DELETE CASCADE,
+    vendor_id INT NOT NULL REFERENCES Vendors(vendor_id) ON DELETE CASCADE,
     value_date DATE NOT NULL,
     value DECIMAL(10, 2) NOT NULL,
-    UNIQUE (indicator_id, value_date)
-);
+    UNIQUE (indicator_id, run_id, vendor_id, value_date)
+) PARTITION BY RANGE (value_date);
+
+-- Partition the Indicator_Values table for specific days
+CREATE TABLE Indicator_Values_20240911 PARTITION OF Indicator_Values
+FOR VALUES FROM ('2024-09-11') TO ('2024-09-12');
+
+CREATE TABLE Indicator_Values_20240912 PARTITION OF Indicator_Values
+FOR VALUES FROM ('2024-09-12') TO ('2024-09-13');
+
+CREATE TABLE Indicator_Values_20240913 PARTITION OF Indicator_Values
+FOR VALUES FROM ('2024-09-13') TO ('2024-09-14');
 
 -- Attributes Table
 CREATE TABLE Attributes (
@@ -73,7 +92,7 @@ CREATE TABLE Attributes (
     description TEXT
 );
 
--- Indicator_Attributes Table (Join Table for Many-to-Many relationship)
+-- Indicator_Attributes Table (Many-to-Many relationship between Indicators and Attributes)
 CREATE TABLE Indicator_Attributes (
     indicator_id INT NOT NULL REFERENCES Indicators(indicator_id) ON DELETE CASCADE,
     attribute_id INT NOT NULL REFERENCES Attributes(attribute_id) ON DELETE CASCADE,
@@ -85,8 +104,9 @@ CREATE TABLE Attribute_Values (
     attribute_value_id SERIAL PRIMARY KEY,
     attribute_id INT NOT NULL REFERENCES Attributes(attribute_id) ON DELETE CASCADE,
     run_id INT NOT NULL REFERENCES Runs(run_id) ON DELETE CASCADE,
+    issuer_id INT NOT NULL REFERENCES Issuers(issuer_id) ON DELETE CASCADE,
     value DECIMAL(10, 2) NOT NULL,
-    UNIQUE (attribute_id, run_id)
+    UNIQUE (attribute_id, run_id, issuer_id)
 );
 
 -- Alternative_Indicators Table
@@ -97,9 +117,11 @@ CREATE TABLE Alternative_Indicators (
 );
 ```
 
+---
+
 ## PlantUML Diagram
 
-The PlantUML diagram visually represents the schema.
+The following **PlantUML** diagram visually represents the schema described above:
 
 ```plantuml
 @startuml
@@ -117,7 +139,6 @@ TABLE Issuers {
 
 TABLE Runs {
     run_id INT PK
-    issuer_id INT FK -- Issuer the run is associated with
     run_date DATE
 }
 
@@ -129,21 +150,18 @@ TABLE Indicators {
 TABLE Run_Indicators {
     run_id INT FK
     indicator_id INT FK
-    vendor_id INT FK
-    PRIMARY KEY (run_id, indicator_id, vendor_id)
+    PRIMARY KEY (run_id, indicator_id)
 }
 
 TABLE Indicator_Values {
     indicator_value_id INT PK
     indicator_id INT FK
+    run_id INT FK
+    issuer_id INT FK
+    vendor_id INT FK
     value_date DATE
     value DECIMAL(10, 2)
-}
-
-TABLE Alternative_Indicators {
-    indicator_id INT FK
-    alternative_indicator_id INT FK
-    PRIMARY KEY (indicator_id, alternative_indicator_id)
+    UNIQUE (indicator_id, run_id, vendor_id, value_date)
 }
 
 TABLE Attributes {
@@ -162,88 +180,144 @@ TABLE Attribute_Values {
     attribute_value_id INT PK
     attribute_id INT FK
     run_id INT FK
+    issuer_id INT FK
     value DECIMAL(10, 2)
-    FOREIGN KEY (attribute_id) REFERENCES Attributes(attribute_id)
-    FOREIGN KEY (run_id) REFERENCES Runs(run_id)
+    UNIQUE (attribute_id, run_id, issuer_id)
 }
 
-Issuers ||--o{ Runs : "Tracks runs for"
-Indicators ||--o{ Run_Indicators : "Is associated with a run"
-Vendors ||--o{ Run_Indicators : "Provides for"
+TABLE Alternative_Indicators {
+    indicator_id INT FK
+    alternative_indicator_id INT FK
+    PRIMARY KEY (indicator_id, alternative_indicator_id)
+}
+
+-- Relationships
 Runs ||--o{ Run_Indicators : "Has indicators"
-Indicators ||--o{ Indicator_Values : "Has values"
-Indicators ||--o{ Alternative_Indicators : "Is alternative to"
+Indicators ||--o{ Run_Indicators : "Is associated with a run"
+Indicators ||--o{ Indicator_Values : "Has values for a specific run and vendor"
+Vendors ||--o{ Indicator_Values : "Provides values"
+Runs ||--o{ Indicator_Values : "Values associated with a run"
+Issuers ||--o{ Indicator_Values : "Issuer responsible for value"
 Attributes ||--o{ Attribute_Values : "Has attribute values for runs"
+Issuers ||--o{ Attribute_Values : "Issuer responsible for attribute value"
 Attributes ||--o{ Indicator_Attributes : "Is associated with many indicators"
 Indicators ||--o{ Indicator_Attributes : "Has many attributes"
-Runs ||--o{ Attribute_Values : "Attribute values connected to run date"
+Indicators ||--o{ Alternative_Indicators : "Is alternative to"
 @enduml
 ```
 
+---
+
+## Table Descriptions
+
+### `Vendors`
+- **vendor_id**: Unique identifier for each vendor.
+- **vendor_name**: Name of the vendor providing the indicator data.
+
+### `Issuers`
+- **issuer_id**: Unique identifier for each issuer.
+- **issuer_name**: Name of the issuer responsible for managing the runs.
+
+### `Runs`
+- **run_id**: Unique identifier for each run.
+- **run_date**: The date on which the run occurs.
+
+### `Indicators`
+- **indicator_id**: Unique identifier for each indicator (e.g., temperature, humidity).
+- **indicator_name**: Name of the indicator.
+
+### `Run_Indicators`
+- **run_id**: Foreign key referencing a specific run.
+- **indicator_id**: Foreign key referencing a specific indicator.
+
+### `Indicator_Values`
+- **indicator_value_id**: Unique identifier for each recorded value.
+- **indicator_id**: Foreign key referencing the indicator.
+- **run_id**: Foreign key referencing the run.
+- **issuer_id**: Foreign key referencing the issuer responsible for the indicator value.
+- **vendor_id**: Foreign key referencing the vendor providing the indicator value.
+- **value_date**: The date the value was recorded.
+- **value**: The recorded value of the indicator.
+
+### `Attributes`
+- **attribute_id**: Unique identifier for each attribute.
+- **attribute_name**: Name of the attribute (e.g., Max Temperature).
+- **description**: Description of the attribute.
+
+### `Indicator_Attributes`
+- **indicator_id**: Foreign key referencing the indicator.
+- **attribute_id**: Foreign key referencing the attribute.
+
+### `Attribute_Values`
+- **attribute_value_id**: Unique identifier for each recorded attribute value.
+- **attribute_id**: Foreign key referencing the attribute.
+- **run_id**: Foreign key referencing the run.
+-
+
+ **issuer_id**: Foreign key referencing the issuer responsible for the attribute value.
+- **value**: The recorded value for the attribute.
+
+### `Alternative_Indicators`
+- **indicator_id**: Foreign key referencing the indicator.
+- **alternative_indicator_id**: Foreign key referencing the alternative indicator.
+
+---
+
 ## Example SQL Queries
 
-### 1. Inserting Data
+Here are some useful SQL queries to interact with the database:
 
-#### Insert into Issuers, Vendors, and Indicators:
+### 1. Insert Data
 
 ```sql
--- Insert Issuer
+-- Insert an issuer
 INSERT INTO Issuers (issuer_name) VALUES ('GlobalWeather');
 
--- Insert Vendor
+-- Insert a vendor
 INSERT INTO Vendors (vendor_name) VALUES ('WeatherCorp');
 
--- Insert Indicator
+-- Insert an indicator
 INSERT INTO Indicators (indicator_name) VALUES ('Temperature');
+
+-- Insert a run
+INSERT INTO Runs (run_date) VALUES ('2024-09-11');
+
+-- Insert a run-indicator relationship
+INSERT INTO Run_Indicators (run_id, indicator_id) VALUES (1, 1);
+
+-- Insert an indicator value for a run, vendor, and issuer
+INSERT INTO Indicator_Values (indicator_id, run_id, issuer_id, vendor_id, value_date, value)
+VALUES (1, 1, 1, 1, '2024-09-11', 23.5);
 ```
 
-#### Insert into Runs and Associate Indicators and Vendors:
+### 2. Query Data
+
+#### Retrieve all indicator values for a specific run:
 
 ```sql
--- Insert a Run
-INSERT INTO Runs (issuer_id, run_date) VALUES (1, '2024-09-11');
-
--- Associate a Run with an Indicator and Vendor
-INSERT INTO Run_Indicators (run_id, indicator_id, vendor_id)
-VALUES (1, 1, 1);
+SELECT i.indicator_name, iv.value, iv.value_date, v.vendor_name
+FROM Indicator_Values iv
+JOIN Indicators i ON iv.indicator_id = i.indicator_id
+JOIN Vendors v ON iv.vendor_id = v.vendor_id
+WHERE iv.run_id = 1;
 ```
 
-#### Insert Attributes and Their Values:
+#### Retrieve attributes and their values for a specific run:
 
 ```sql
--- Insert Attributes for an Indicator
-INSERT INTO Attributes (attribute_name, description) 
-VALUES ('Max Temperature', 'Maximum temperature during the day'),
-       ('Min Temperature', 'Minimum temperature during the day');
-
--- Associate Indicators with Attributes (Many-to-Many)
-INSERT INTO Indicator_Attributes (indicator_id, attribute_id) 
-VALUES (1, 1), (1, 2);
-
--- Insert Attribute Values for a Run
-INSERT INTO Attribute_Values (attribute_id, run_id, value)
-VALUES (1, 1, 32.5),  -- Max Temperature value
-       (2, 1, 15.2);  -- Min Temperature value
-```
-
-### 2. Retrieving Data
-
-#### Retrieve All Attributes for a Specific Indicator:
-
-```sql
-SELECT i.indicator_name, a.attribute_name
-FROM Indicators i
-JOIN Indicator_Attributes ia ON i.indicator_id = ia.indicator_id
-JOIN Attributes a ON ia.attribute_id = a.attribute_id
-WHERE i.indicator_name = 'Temperature';
-```
-
-#### Retrieve Attribute Values for a Run:
-
-```sql
-SELECT r.run_date, a.attribute_name, av.value
-FROM Runs r
-JOIN Attribute_Values av ON r.run_id = av.run_id
+SELECT a.attribute_name, av.value
+FROM Attribute_Values av
 JOIN Attributes a ON av.attribute_id = a.attribute_id
-WHERE r.run_id = 1;
+WHERE av.run_id = 1;
 ```
+
+#### Retrieve alternative indicators for a specific indicator:
+
+```sql
+SELECT i.indicator_name, ai.alternative_indicator_id
+FROM Alternative_Indicators ai
+JOIN Indicators i ON ai.indicator_id = i.indicator_id
+WHERE ai.indicator_id = 1;
+```
+
+---
