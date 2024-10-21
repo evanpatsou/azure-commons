@@ -341,23 +341,48 @@ historical_df_final.show(truncate=False)
 ```
 ## DB save
 
-```
-# Add a unique identifier column (if not already present)
-# For this example, we'll assume 'id' is the primary key
+### Write the DataFrame to a Temporary Staging Table
 
-# Define a function to generate the upsert SQL statement dynamically
-def generate_upsert_statement(table, columns, primary_keys):
-    update_columns = [col for col in columns if col not in primary_keys]
-    set_clause = ", ".join([f"{col}=EXCLUDED.{col}" for col in update_columns])
-    conflict_clause = ", ".join(primary_keys)
-    sql_statement = f"""
-    CREATE TEMP TABLE tmp_table AS SELECT * FROM {table} WHERE 1=0;
-    COPY tmp_table ({', '.join(columns)}) FROM STDIN WITH (FORMAT CSV);
-    INSERT INTO {table} ({', '.join(columns)})
-    SELECT * FROM tmp_table
-    ON CONFLICT ({conflict_clause}) DO UPDATE SET {set_clause};
-    """
-    return sql_statement
+First, write the DataFrame to a temporary table in your PostgreSQL database.
+
+```python
+# Database connection parameters
+jdbc_url = "jdbc:postgresql://your_database_host:5432/your_database_name"
+db_table = "your_schema.your_table_name"
+temp_table = "your_schema.temp_table_name"  # Temporary staging table
+db_user = "your_username"
+db_password = "your_password"
+
+# Connection properties
+connection_properties = {
+    "user": db_user,
+    "password": db_password,
+    "driver": "org.postgresql.Driver"
+}
+
+# Write the DataFrame to the temporary table
+historical_df_final.write \
+    .jdbc(url=jdbc_url, table=temp_table, mode='overwrite', properties=connection_properties)
+```
+
+### Step 2: Perform the Upsert Using SQL
+
+Now, use a JDBC connection to execute the `INSERT ... ON CONFLICT` SQL statement that performs the upsert from the temporary table to your target table.
+
+```python
+import psycopg2  # Use psycopg2 to execute SQL statements
+
+# Establish a connection to PostgreSQL
+conn = psycopg2.connect(
+    dbname="your_database_name",
+    user=db_user,
+    password=db_password,
+    host="your_database_host",
+    port="5432"
+)
+
+# Create a cursor
+cursor = conn.cursor()
 
 # Get the list of columns dynamically
 columns = historical_df_final.columns
@@ -365,20 +390,120 @@ columns = historical_df_final.columns
 # Define the primary key columns
 primary_keys = ['id']  # Adjust based on your actual primary key columns
 
-# Generate the upsert SQL statement
-upsert_sql = generate_upsert_statement(db_table, columns, primary_keys)
+# Generate the column lists for the SQL statement
+columns_list = ', '.join(columns)
+excluded_columns = ', '.join([f"EXCLUDED.{col}" for col in columns if col not in primary_keys])
 
-# Use the upsert SQL statement in the DataFrame write operation
-historical_df_final.write \
-    .format("jdbc") \
-    .option("url", jdbc_url) \
-    .option("dbtable", db_table) \
-    .option("user", db_user) \
-    .option("password", db_password) \
-    .option("driver", "org.postgresql.Driver") \
-    .option("numPartitions", 10) \
-    .option("batchsize", 10000) \
-    .mode("append") \
-    .option("sql", upsert_sql) \
-    .save()
+# Generate the upsert SQL statement
+upsert_sql = f"""
+INSERT INTO {db_table} ({columns_list})
+SELECT {columns_list} FROM {temp_table}
+ON CONFLICT ({', '.join(primary_keys)}) DO UPDATE SET
+{', '.join([f"{col} = EXCLUDED.{col}" for col in columns if col not in primary_keys])};
+"""
+
+# Execute the upsert SQL statement
+cursor.execute(upsert_sql)
+
+# Commit the transaction and close the connection
+conn.commit()
+cursor.close()
+conn.close()
+```
+
+### Step 3: Clean Up the Temporary Table
+
+Optionally, you can drop the temporary table after the upsert operation.
+
+```python
+# Re-establish the connection if necessary
+conn = psycopg2.connect(
+    dbname="your_database_name",
+    user=db_user,
+    password=db_password,
+    host="your_database_host",
+    port="5432"
+)
+cursor = conn.cursor()
+
+# Drop the temporary table
+cursor.execute(f"DROP TABLE IF EXISTS {temp_table};")
+
+conn.commit()
+cursor.close()
+conn.close()
+```
+
+## Explanation
+
+- **Writing to the Temporary Table:**
+  - We use the standard Spark JDBC write operation to write `historical_df_final` to a temporary table in the database.
+  - This avoids issues with the `COPY` command and leverages Spark's capabilities.
+
+- **Performing the Upsert:**
+  - We use the `psycopg2` library to establish a direct connection to the PostgreSQL database.
+  - We construct the `INSERT ... ON CONFLICT` SQL statement dynamically, handling any number of columns.
+  - The `EXCLUDED` keyword in PostgreSQL refers to the values proposed for insertion.
+  - We specify the columns to update in case of a conflict on the primary key.
+
+- **Cleaning Up:**
+  - After the upsert, we drop the temporary table to clean up.
+
+## Notes
+
+- **Security Considerations:**
+  - Be careful with database credentials; do not hard-code them in your scripts. Use environment variables or secure credential storage mechanisms.
+  
+- **Error Handling:**
+  - Implement appropriate error handling using try-except blocks to manage exceptions and ensure connections are properly closed.
+
+- **Transaction Management:**
+  - Ensure that the upsert operation is atomic and that the transaction is committed only after the upsert succeeds.
+
+- **Performance Optimization:**
+  - For large datasets, consider indexing the temporary table on the primary key to improve the performance of the upsert.
+
+## Alternative: Using `copy_from` with `psycopg2`
+
+If you prefer to use the `copy_from` method for bulk loading data, here's how you can do it:
+
+### Step 1: Convert DataFrame to CSV in Memory
+
+```python
+import io
+
+# Convert DataFrame to CSV in memory
+csv_buffer = io.StringIO()
+historical_df_final.toPandas().to_csv(csv_buffer, index=False, header=False)
+csv_buffer.seek(0)
+```
+
+### Step 2: Use `copy_from` to Load Data into the Table
+
+```python
+import psycopg2
+
+# Establish a connection to PostgreSQL
+conn = psycopg2.connect(
+    dbname="your_database_name",
+    user=db_user,
+    password=db_password,
+    host="your_database_host",
+    port="5432"
+)
+
+# Create a cursor
+cursor = conn.cursor()
+
+# Use copy_from to load data
+cursor.copy_from(
+    file=csv_buffer,
+    table=db_table,
+    sep=',',
+    columns=columns  # Ensure the columns are in the correct order
+)
+
+conn.commit()
+cursor.close()
+conn.close()
 ```
