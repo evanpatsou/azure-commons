@@ -339,7 +339,9 @@ historical_df_final.show(truncate=False)
 |5  |e   |v   |epsilon|purple  |2024-01-01|null      |
 +---+----+----+-----+----------+----------+----------+
 ```
+## DB save
 
+```
 # Add a unique identifier column (if not already present)
 # For this example, we'll assume 'id' is the primary key
 
@@ -379,3 +381,4 @@ historical_df_final.write \
     .mode("append") \
     .option("sql", upsert_sql) \
     .save()
+```
