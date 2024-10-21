@@ -339,3 +339,43 @@ historical_df_final.show(truncate=False)
 |5  |e   |v   |epsilon|purple  |2024-01-01|null      |
 +---+----+----+-----+----------+----------+----------+
 ```
+
+# Add a unique identifier column (if not already present)
+# For this example, we'll assume 'id' is the primary key
+
+# Define a function to generate the upsert SQL statement dynamically
+def generate_upsert_statement(table, columns, primary_keys):
+    update_columns = [col for col in columns if col not in primary_keys]
+    set_clause = ", ".join([f"{col}=EXCLUDED.{col}" for col in update_columns])
+    conflict_clause = ", ".join(primary_keys)
+    sql_statement = f"""
+    CREATE TEMP TABLE tmp_table AS SELECT * FROM {table} WHERE 1=0;
+    COPY tmp_table ({', '.join(columns)}) FROM STDIN WITH (FORMAT CSV);
+    INSERT INTO {table} ({', '.join(columns)})
+    SELECT * FROM tmp_table
+    ON CONFLICT ({conflict_clause}) DO UPDATE SET {set_clause};
+    """
+    return sql_statement
+
+# Get the list of columns dynamically
+columns = historical_df_final.columns
+
+# Define the primary key columns
+primary_keys = ['id']  # Adjust based on your actual primary key columns
+
+# Generate the upsert SQL statement
+upsert_sql = generate_upsert_statement(db_table, columns, primary_keys)
+
+# Use the upsert SQL statement in the DataFrame write operation
+historical_df_final.write \
+    .format("jdbc") \
+    .option("url", jdbc_url) \
+    .option("dbtable", db_table) \
+    .option("user", db_user) \
+    .option("password", db_password) \
+    .option("driver", "org.postgresql.Driver") \
+    .option("numPartitions", 10) \
+    .option("batchsize", 10000) \
+    .mode("append") \
+    .option("sql", upsert_sql) \
+    .save()
