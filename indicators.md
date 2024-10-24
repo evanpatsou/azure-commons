@@ -1,60 +1,114 @@
-## Import Libraries
+## Updated Code with All Columns Except `to_date` as Key Columns
+
+### Import Libraries
 
 ```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, when, lit, to_date, row_number, lag, lead, date_sub
+    col, when, lit, to_date, row_number, lead, date_sub, current_date, broadcast
 )
 from pyspark.sql.window import Window
 from functools import reduce
 ```
 
-## Initialize Spark Session
+### Initialize Spark Session
 
 ```python
-# Initialize Spark session
-spark = SparkSession.builder.appName("HistoricalDataUpdateDataFrameAPI").getOrCreate()
+spark = SparkSession.builder.appName("UpdateHistoricalData").getOrCreate()
 ```
 
-## Sample Data Creation
+### Sample Data Creation
 
-### Historical DataFrame
+#### **`dataset_1`**
+
+```python
+# Sample data for dataset_1
+data1 = [
+    (1, 'tc1', 'Name1'),
+    (2, 'tc2', 'Name2'),
+    (3, 'tc3', 'Name3'),
+    (4, 'tc4', 'Name4')
+]
+
+columns = ['dataset1_id', 'textcode', 'name']
+dataset_1 = spark.createDataFrame(data1, columns)
+```
+
+#### **`dataset_2`**
+
+```python
+# Sample data for dataset_2
+data2 = [
+    ('tc1', 'Name1_new'),
+    ('tc2', 'Name2_new'),
+    ('tc5', 'Name5_new'),
+    ('tc_collide', 'Name_collide')
+]
+
+dataset_2 = spark.createDataFrame(data2, ['textcode', 'name'])
+```
+
+#### **`dataset_3`**
+
+```python
+# Sample data for dataset_3
+data3 = [
+    (100, 'tc6', 'Name6'),
+    (200, 'tc7', 'Name7'),
+    (300, 'tc2', 'Name2_dup')
+]
+
+columns = ['dataset3_id', 'textcode', 'name']
+dataset_3 = spark.createDataFrame(data3, columns)
+```
+
+### Data Preparation and Merging
+
+We follow the same steps as before to handle collisions and merge the datasets, ensuring consistency.
+
+### Create `current_df` from Merged Data
+
+#### **Add Processing Date**
+
+```python
+# Assume processing_date is the current date
+current_df = merged_dataset.withColumn('processing_date', current_date())
+```
+
+#### **Map Columns to `current_df` Structure**
+
+```python
+# Map columns to match current_df structure
+current_df = merged_dataset.select(
+    col('dataset1_id'),
+    col('dataset3_id'),
+    col('textcode'),
+    coalesce(col('name'), col('dataset2_name')).alias('name'),
+    lit(None).alias('processed'),
+    'processing_date'
+)
+```
+
+### Prepare the Historical DataFrame
+
+#### **Sample Data Creation for Historical DataFrame**
 
 ```python
 # Sample data for the historical DataFrame
 historical_data = [
-    (1, 'A', 'X', 'Alpha', 'Red', '2024-01-01', None),
-    (2, 'B', 'Y', 'Beta', 'Blue', '2024-01-01', None),
-    (3, 'C', 'Z', 'Gamma', 'Green', '2024-01-01', None),
-    (4, 'D', 'W', 'Delta', 'Yellow', '2023-12-31', '2024-01-01')
+    (1, None, 'tc1', 'Name1', 'Processed1', '2024-01-01', None),
+    (2, None, 'tc2', 'Name2', 'Processed2', '2024-01-01', None),
+    (None, 100, 'tc6', 'Name6', 'Processed6', '2024-01-01', None),
+    (None, 200, 'tc7', 'Name7', 'Processed7', '2024-01-01', None)
 ]
 
-# Define columns for the historical DataFrame
-historical_columns = ['id', 'col1', 'col2', 'col3', 'processed', 'from_date', 'to_date']
-
+historical_columns = ['dataset1_id', 'dataset3_id', 'textcode', 'name', 'processed', 'from_date', 'to_date']
 historical_df = spark.createDataFrame(historical_data, historical_columns)
 ```
 
-### Current DataFrame
+### Data Preparation and Validation
 
-```python
-# Sample data for the current DataFrame
-current_data = [
-    (1, 'A', 'X', 'Alpha', 'Crimson', '2024-01-04'),
-    (2, 'B', 'Y', 'Beta', 'Blue', '2024-01-01'),
-    (3, 'C', 'Z', 'Gamma', 'Emerald', '2024-01-03'),
-    (5, 'E', 'V', 'Epsilon', 'Purple', '2024-01-01')
-]
-
-# Define columns for the current DataFrame
-current_columns = ['id', 'col1', 'col2', 'col3', 'processed', 'processing_date']
-
-current_df = spark.createDataFrame(current_data, current_columns)
-```
-
-## Data Preparation and Validation
-
-### Convert Date Columns
+#### **Convert Date Columns**
 
 ```python
 # Convert date columns in historical_df
@@ -65,19 +119,17 @@ historical_df = historical_df.withColumn('from_date', to_date('from_date')) \
 current_df = current_df.withColumn('processing_date', to_date('processing_date'))
 ```
 
-### Ensure Consistent Data Types and Standardize Casing
+#### **Ensure Consistent Data Types and Standardize Casing**
 
 ```python
-# List of all columns except dates
-all_columns = [c for c in historical_df.columns if c not in {'from_date', 'to_date'}]
-
-# Cast all columns to string and standardize casing
-for col_name in all_columns:
-    historical_df = historical_df.withColumn(col_name, col(col_name).cast('string').lower())
-    current_df = current_df.withColumn(col_name, col(col_name).cast('string').lower())
+# Cast all columns to string and standardize casing (except dates)
+for col_name in historical_df.columns:
+    if col_name not in {'from_date', 'to_date'}:
+        historical_df = historical_df.withColumn(col_name, col(col_name).cast('string').lower())
+        current_df = current_df.withColumn(col_name, col(col_name).cast('string').lower())
 ```
 
-### Remove Duplicates and Nulls
+#### **Remove Duplicates and Nulls**
 
 ```python
 # Remove duplicates in current_df
@@ -85,200 +137,141 @@ current_df = current_df.dropDuplicates()
 
 # Filter out records with null processing_date
 current_df = current_df.filter(col('processing_date').isNotNull())
-
-# Validate key columns are not null
-key_columns = ['id']
-for col_name in key_columns:
-    historical_df = historical_df.filter(col(col_name).isNotNull())
-    current_df = current_df.filter(col(col_name).isNotNull())
 ```
 
-## Identify Key and Changing Columns
+### Identify Key Columns
 
 ```python
-# Define columns to compare for changes (excluding key columns and date columns)
-non_comparable_columns = set(key_columns + ['from_date', 'to_date', 'processing_date'])
-changing_columns = [c for c in historical_df.columns if c not in non_comparable_columns]
+# Define key columns as all columns except 'to_date'
+key_columns = [col_name for col_name in historical_df.columns if col_name != 'to_date']
 
 print("Key Columns:", key_columns)
-print("Changing Columns:", changing_columns)
 ```
 
 **Output:**
 
 ```
-Key Columns: ['id']
-Changing Columns: ['col1', 'col2', 'col3', 'processed']
+Key Columns: ['dataset1_id', 'dataset3_id', 'textcode', 'name', 'processed', 'from_date']
 ```
 
-## Join Historical and Current Data
+### Since All Columns (Except `to_date`) Are Key Columns, There Are No Changing Columns
+
+```python
+changing_columns = []  # No changing columns because all are part of the key
+```
+
+### Join Historical and Current Data
 
 ```python
 # Join historical and current data on key columns
+join_condition = [historical_df[k] == current_df[k] for k in key_columns]
 joined_df = historical_df.alias('hist').join(
     current_df.alias('curr'),
-    on=key_columns,
+    on=join_condition,
     how='inner'
 )
 ```
 
-## Determine Records that Need to Be Updated
+### Determine Records that Need to Be Updated
 
-### Build the Change Condition with Null Handling
+#### **Build the Change Condition**
 
-```python
-# Build the change_condition with null-safe equality check
-change_conditions = [
-    col(f'hist.{c}').eqNullSafe(col(f'curr.{c}')) == False
-    for c in changing_columns
-]
+Since all columns are part of the key, any difference in the key columns indicates a different record.
 
-# Combine all conditions using logical OR
-change_condition = reduce(lambda x, y: x | y, change_conditions)
-```
+In this case, **if a record exists in both `historical_df` and `current_df` with the same key (i.e., all columns except `to_date`), it does not need to be updated**.
 
-**Explanation:**
+#### **Identify Records to Update**
 
-- We use `eqNullSafe` to handle `NULL` values correctly.
-- The condition checks if any of the changing columns have changed.
-
-### Identify Records to Update
+Records in `historical_df` where `to_date` is `NULL` and the corresponding record in `current_df` does not exist (i.e., the key does not match) need to be closed (set `to_date`).
 
 ```python
-# Identify records where any column has changed
-records_to_update = joined_df.filter(change_condition)
+# Identify current entries in historical_df (to_date is null)
+current_hist_entries = historical_df.filter(col('to_date').isNull())
 
-# Records where no columns have changed
-records_no_change = joined_df.filter(~change_condition)
-```
-
-## Update `to_date` in Historical Records
-
-```python
-# Exclude 'to_date' from historical columns
-hist_columns = [c for c in historical_df.columns if c != 'to_date']
-
-# Build the updated DataFrame with new 'to_date'
-updated_to_date_df = records_to_update.select(
-    *[col('hist.' + c).alias(c) for c in hist_columns],
-    col('curr.processing_date').alias('to_date')
-)
-```
-
-## Identify Non-Updated Historical Records
-
-### Records Not Updated Because No Columns Changed
-
-```python
-# These records remain as they are
-non_updated_historical_df_same = records_no_change.select(
-    *[col('hist.' + c).alias(c) for c in historical_df.columns]
-)
-```
-
-### Records Not Updated Because No Matching Current Data
-
-```python
-# Get the rest of the historical records that didn't join with current data
-non_updated_historical_df_rest = historical_df.alias('hist').join(
-    joined_df.select(col('hist.id')).distinct(),
-    on='id',
+# Left anti join to find historical records not in current_df
+records_to_update = current_hist_entries.alias('hist').join(
+    current_df.alias('curr'),
+    on=key_columns,
     how='left_anti'
 )
 ```
 
-### Combine Non-Updated Historical Records
+### Update `to_date` in Historical Records
 
 ```python
-non_updated_historical_df = non_updated_historical_df_same.unionByName(non_updated_historical_df_rest)
+# Update to_date to processing_date for records to update
+updated_to_date_df = records_to_update.withColumn('to_date', current_date())
 ```
 
-## Combine Updated and Non-Updated Historical Records
+### Identify Non-Updated Historical Records
+
+```python
+# Historical records that don't need to be updated
+non_updated_historical_df = historical_df.alias('hist').join(
+    updated_to_date_df.select(*key_columns), on=key_columns, how='left_anti'
+)
+```
+
+### Combine Updated and Non-Updated Historical Records
 
 ```python
 # Combine updated and non-updated historical records
 historical_df_updated = non_updated_historical_df.unionByName(updated_to_date_df)
 ```
 
-## Add New Records from Current Data
+### Add New Records from Current Data
 
-### Prepare Current Records
-
-```python
-# Prepare to identify new records needed
-current_records_needed = current_df.select(
-    *key_columns,
-    'processing_date',
-    *changing_columns
-)
-```
-
-### Identify New Records Needed
+#### **Identify New Records Not in Historical Data**
 
 ```python
-# Left anti join to find current records with no matching historical record
-new_records_no_hist = current_records_needed.alias('curr').join(
-    historical_df.alias('hist'),
+# Left anti join to find new records in current_df not in historical_df
+new_records_df = current_df.alias('curr').join(
+    historical_df_updated.alias('hist'),
     on=key_columns,
     how='left_anti'
 )
-
-# Records where any column has changed (from records_to_update)
-new_records_changed = records_to_update.select(
-    *[col('curr.' + c).alias(c) for c in key_columns],
-    col('curr.processing_date').alias('from_date'),
-    *[col('curr.' + c).alias(c) for c in changing_columns]
-)
 ```
 
-### Combine New Records
+#### **Add `from_date` and `to_date` Columns**
 
 ```python
-# New records from current data
-new_records_df = new_records_no_hist.select(
-    *key_columns,
-    col('processing_date').alias('from_date'),
-    *changing_columns
-).unionByName(new_records_changed)
-
-# Add 'to_date' as None for new records
-new_records_df = new_records_df.withColumn('to_date', lit(None).cast('date'))
+# Add 'from_date' and 'to_date' columns to new records
+new_records_df = new_records_df.withColumn('from_date', current_date()).withColumn('to_date', lit(None).cast('date'))
 ```
 
-## Combine with Historical DataFrame
+### Combine with Historical DataFrame
 
 ```python
 # Combine the historical data with new records
 historical_df_final = historical_df_updated.unionByName(new_records_df.select(historical_df_updated.columns))
 ```
 
-## Adjust Overlapping Date Ranges
+### Adjust Overlapping Date Ranges
 
-### Define Window Specification
+Since we're using all columns except `to_date` as keys, and there are no changing columns, overlapping date ranges should not occur.
+
+However, we can still apply the window function to adjust `to_date` if necessary.
+
+#### **Define Window Specification**
 
 ```python
-# Define window specification based on all columns except dates
-partition_columns = key_columns + changing_columns
-
-window_spec = Window.partitionBy(*partition_columns).orderBy(col('from_date').asc())
+window_spec = Window.partitionBy(*key_columns).orderBy(col('from_date').asc())
 ```
 
-### Apply Window Functions
+#### **Apply Window Functions**
 
 ```python
-# Add row number and next_from_date
-historical_df_final = historical_df_final.withColumn('rn', row_number().over(window_spec))
-
+# Add next_from_date
 historical_df_final = historical_df_final.withColumn(
     'next_from_date',
     lead(col('from_date')).over(window_spec)
 )
 ```
 
-### Adjust `to_date` to Prevent Overlaps
+#### **Adjust `to_date`**
 
 ```python
-# Adjust to_date to be one day before next_from_date
+# Adjust to_date to be one day before next_from_date if necessary
 historical_df_final = historical_df_final.withColumn(
     'adjusted_to_date',
     when(
@@ -288,36 +281,34 @@ historical_df_final = historical_df_final.withColumn(
 )
 ```
 
-## Finalize DataFrame
+### Finalize DataFrame
 
-### Drop Temporary Columns and Rename Adjusted Columns
+#### **Drop Temporary Columns and Rename Adjusted Columns**
 
 ```python
 # Drop temporary columns and rename adjusted_to_date
-historical_df_final = historical_df_final.drop('to_date', 'rn', 'next_from_date')
+historical_df_final = historical_df_final.drop('to_date', 'next_from_date')
 historical_df_final = historical_df_final.withColumnRenamed('adjusted_to_date', 'to_date')
 ```
 
-### Remove Duplicates
+#### **Remove Duplicates**
 
 ```python
 # Remove duplicates if any
-historical_df_final = historical_df_final.dropDuplicates(
-    key_columns + changing_columns + ['from_date']
-)
+historical_df_final = historical_df_final.dropDuplicates()
 ```
 
-### Sort the DataFrame for Clarity
+#### **Sort the DataFrame for Clarity**
 
 ```python
 # Sort the DataFrame for clarity
 historical_df_final = historical_df_final.orderBy(
-    key_columns + changing_columns + ['from_date'],
-    ascending=[True] * (len(key_columns) + len(changing_columns) + 1)
+    key_columns + ['from_date'],
+    ascending=[True] * (len(key_columns) + 1)
 )
 ```
 
-## Show Final Historical DataFrame
+### Show Final Historical DataFrame
 
 ```python
 # Show the final historical DataFrame
@@ -327,183 +318,17 @@ historical_df_final.show(truncate=False)
 **Expected Output:**
 
 ```
-+---+----+----+-----+----------+----------+----------+
-|id |col1|col2|col3 |processed |from_date |to_date   |
-+---+----+----+-----+----------+----------+----------+
-|1  |a   |x   |alpha|crimson   |2024-01-04|null      |
-|1  |a   |x   |alpha|red       |2024-01-01|2024-01-03|
-|2  |b   |y   |beta |blue      |2024-01-01|null      |
-|3  |c   |z   |gamma|emerald   |2024-01-03|null      |
-|3  |c   |z   |gamma|green     |2024-01-01|2024-01-02|
-|4  |d   |w   |delta|yellow    |2023-12-31|2024-01-01|
-|5  |e   |v   |epsilon|purple  |2024-01-01|null      |
-+---+----+----+-----+----------+----------+----------+
-```
-## DB save
-
-### Write the DataFrame to a Temporary Staging Table
-
-First, write the DataFrame to a temporary table in your PostgreSQL database.
-
-```python
-# Database connection parameters
-jdbc_url = "jdbc:postgresql://your_database_host:5432/your_database_name"
-db_table = "your_schema.your_table_name"
-temp_table = "your_schema.temp_table_name"  # Temporary staging table
-db_user = "your_username"
-db_password = "your_password"
-
-# Connection properties
-connection_properties = {
-    "user": db_user,
-    "password": db_password,
-    "driver": "org.postgresql.Driver"
-}
-
-# Write the DataFrame to the temporary table
-historical_df_final.write \
-    .jdbc(url=jdbc_url, table=temp_table, mode='overwrite', properties=connection_properties)
++------------+------------+--------+---------+----------+----------+----------+
+|dataset1_id |dataset3_id |textcode|name     |processed |from_date |to_date   |
++------------+------------+--------+---------+----------+----------+----------+
+|1           |null        |tc1     |name1    |processed1|2024-01-01|2024-10-24|
+|1           |null        |tc1     |name1_new|null      |2024-10-24|null      |
+|2           |null        |tc2     |name2    |processed2|2024-01-01|2024-10-24|
+|2           |null        |tc2     |name2_new|null      |2024-10-24|null      |
+|null        |100         |tc6     |name6    |processed6|2024-01-01|null      |
+|null        |200         |tc7     |name7    |processed7|2024-01-01|null      |
+|null        |null        |tc5     |name5_new|null      |2024-10-24|null      |
++------------+------------+--------+---------+----------+----------+----------+
 ```
 
-### Step 2: Perform the Upsert Using SQL
-
-Now, use a JDBC connection to execute the `INSERT ... ON CONFLICT` SQL statement that performs the upsert from the temporary table to your target table.
-
-```python
-import psycopg2  # Use psycopg2 to execute SQL statements
-
-# Establish a connection to PostgreSQL
-conn = psycopg2.connect(
-    dbname="your_database_name",
-    user=db_user,
-    password=db_password,
-    host="your_database_host",
-    port="5432"
-)
-
-# Create a cursor
-cursor = conn.cursor()
-
-# Get the list of columns dynamically
-columns = historical_df_final.columns
-
-# Define the primary key columns
-primary_keys = ['id']  # Adjust based on your actual primary key columns
-
-# Generate the column lists for the SQL statement
-columns_list = ', '.join(columns)
-excluded_columns = ', '.join([f"EXCLUDED.{col}" for col in columns if col not in primary_keys])
-
-# Generate the upsert SQL statement
-upsert_sql = f"""
-INSERT INTO {db_table} ({columns_list})
-SELECT {columns_list} FROM {temp_table}
-ON CONFLICT ({', '.join(primary_keys)}) DO UPDATE SET
-{', '.join([f"{col} = EXCLUDED.{col}" for col in columns if col not in primary_keys])};
-"""
-
-# Execute the upsert SQL statement
-cursor.execute(upsert_sql)
-
-# Commit the transaction and close the connection
-conn.commit()
-cursor.close()
-conn.close()
-```
-
-### Step 3: Clean Up the Temporary Table
-
-Optionally, you can drop the temporary table after the upsert operation.
-
-```python
-# Re-establish the connection if necessary
-conn = psycopg2.connect(
-    dbname="your_database_name",
-    user=db_user,
-    password=db_password,
-    host="your_database_host",
-    port="5432"
-)
-cursor = conn.cursor()
-
-# Drop the temporary table
-cursor.execute(f"DROP TABLE IF EXISTS {temp_table};")
-
-conn.commit()
-cursor.close()
-conn.close()
-```
-
-## Explanation
-
-- **Writing to the Temporary Table:**
-  - We use the standard Spark JDBC write operation to write `historical_df_final` to a temporary table in the database.
-  - This avoids issues with the `COPY` command and leverages Spark's capabilities.
-
-- **Performing the Upsert:**
-  - We use the `psycopg2` library to establish a direct connection to the PostgreSQL database.
-  - We construct the `INSERT ... ON CONFLICT` SQL statement dynamically, handling any number of columns.
-  - The `EXCLUDED` keyword in PostgreSQL refers to the values proposed for insertion.
-  - We specify the columns to update in case of a conflict on the primary key.
-
-- **Cleaning Up:**
-  - After the upsert, we drop the temporary table to clean up.
-
-## Notes
-
-- **Security Considerations:**
-  - Be careful with database credentials; do not hard-code them in your scripts. Use environment variables or secure credential storage mechanisms.
-  
-- **Error Handling:**
-  - Implement appropriate error handling using try-except blocks to manage exceptions and ensure connections are properly closed.
-
-- **Transaction Management:**
-  - Ensure that the upsert operation is atomic and that the transaction is committed only after the upsert succeeds.
-
-- **Performance Optimization:**
-  - For large datasets, consider indexing the temporary table on the primary key to improve the performance of the upsert.
-
-## Alternative: Using `copy_from` with `psycopg2`
-
-If you prefer to use the `copy_from` method for bulk loading data, here's how you can do it:
-
-### Step 1: Convert DataFrame to CSV in Memory
-
-```python
-import io
-
-# Convert DataFrame to CSV in memory
-csv_buffer = io.StringIO()
-historical_df_final.toPandas().to_csv(csv_buffer, index=False, header=False)
-csv_buffer.seek(0)
-```
-
-### Step 2: Use `copy_from` to Load Data into the Table
-
-```python
-import psycopg2
-
-# Establish a connection to PostgreSQL
-conn = psycopg2.connect(
-    dbname="your_database_name",
-    user=db_user,
-    password=db_password,
-    host="your_database_host",
-    port="5432"
-)
-
-# Create a cursor
-cursor = conn.cursor()
-
-# Use copy_from to load data
-cursor.copy_from(
-    file=csv_buffer,
-    table=db_table,
-    sep=',',
-    columns=columns  # Ensure the columns are in the correct order
-)
-
-conn.commit()
-cursor.close()
-conn.close()
-```
+---
