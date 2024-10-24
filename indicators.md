@@ -1,25 +1,42 @@
-## Updated Code with All Columns Except `to_date` as Key Columns
+# Historical Data Update with Collision Handling and Date Adjustments
 
-### Import Libraries
+This Jupyter notebook demonstrates how to update a historical DataFrame (`historical_df`) based on changes detected in a current DataFrame (`current_df`), while handling collisions and adjusting overlapping date ranges. The notebook includes steps to:
+
+- Read and prepare sample data for `dataset_1`, `dataset_2`, and `dataset_3`.
+- Handle collisions between datasets.
+- Create and update `current_df`.
+- Update `historical_df` based on detected changes.
+- Adjust overlapping date ranges in the historical data.
+- Save the updated `historical_df` to a PostgreSQL database.
+
+---
+
+## Import Libraries
 
 ```python
+# Import necessary libraries
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, when, lit, to_date, row_number, lead, date_sub, current_date, broadcast
+    col, when, lit, to_date, row_number, lead, date_sub, current_date, countDistinct, coalesce
 )
 from pyspark.sql.window import Window
 from functools import reduce
 ```
 
-### Initialize Spark Session
+---
+
+## Initialize Spark Session
 
 ```python
-spark = SparkSession.builder.appName("UpdateHistoricalData").getOrCreate()
+# Initialize Spark session
+spark = SparkSession.builder.appName("HistoricalDataUpdate").getOrCreate()
 ```
 
-### Sample Data Creation
+---
 
-#### **`dataset_1`**
+## Step 1: Read and Prepare Datasets
+
+### **Dataset 1 (`dataset_1`)**
 
 ```python
 # Sample data for dataset_1
@@ -27,252 +44,354 @@ data1 = [
     (1, 'tc1', 'Name1'),
     (2, 'tc2', 'Name2'),
     (3, 'tc3', 'Name3'),
-    (4, 'tc4', 'Name4')
+    (4, 'tc4', 'Name4'),
+    (5, 'tc5', 'Name5')
 ]
 
 columns = ['dataset1_id', 'textcode', 'name']
 dataset_1 = spark.createDataFrame(data1, columns)
 ```
 
-#### **`dataset_2`**
+### **Dataset 2 (`dataset_2`)**
 
 ```python
-# Sample data for dataset_2
+# Sample data for dataset_2 (additional textcodes for dataset_1)
 data2 = [
-    ('tc1', 'Name1_new'),
-    ('tc2', 'Name2_new'),
-    ('tc5', 'Name5_new'),
-    ('tc_collide', 'Name_collide')
+    (1, 'tc1a', 'Name1a'),
+    (2, 'tc2', 'Name2a'),         # Potential collision
+    (3, 'tc3b', 'Name3b'),
+    (5, 'tc5', 'Name5a'),         # Duplicate textcode with dataset_1
+    (5, 'tc5b', 'Name5b')
 ]
 
-dataset_2 = spark.createDataFrame(data2, ['textcode', 'name'])
+columns = ['dataset1_id', 'textcode', 'name']
+dataset_2 = spark.createDataFrame(data2, columns)
 ```
 
-#### **`dataset_3`**
+### **Dataset 3 (`dataset_3`)**
 
 ```python
 # Sample data for dataset_3
 data3 = [
-    (100, 'tc6', 'Name6'),
-    (200, 'tc7', 'Name7'),
-    (300, 'tc2', 'Name2_dup')
+    (100, 'tc1', 'Name1_3'),
+    (200, 'tc2', 'Name2_3'),
+    (300, 'tc3', 'Name3_3'),
+    (400, 'tc6', 'Name6'),
+    (500, 'tc5', 'Name5_3'),
+    (600, 'tc2', 'Name2_dup')  # Potential collision on 'tc2'
 ]
 
 columns = ['dataset3_id', 'textcode', 'name']
 dataset_3 = spark.createDataFrame(data3, columns)
 ```
 
-### Data Preparation and Merging
+---
 
-We follow the same steps as before to handle collisions and merge the datasets, ensuring consistency.
+## Step 2: Enhance `dataset_1` with `dataset_2`, Handling Collisions
 
-### Create `current_df` from Merged Data
-
-#### **Add Processing Date**
+### **Identify Collisions Between `dataset_1` and `dataset_2`**
 
 ```python
-# Assume processing_date is the current date
-current_df = merged_dataset.withColumn('processing_date', current_date())
+from pyspark.sql.functions import countDistinct
+
+# Find textcodes in dataset_2 associated with multiple dataset1_id
+textcode_counts = dataset_2.groupBy('textcode').agg(countDistinct('dataset1_id').alias('id_count'))
+
+# Identify colliding textcodes (textcodes associated with multiple dataset1_id)
+colliding_textcodes = textcode_counts.filter(col('id_count') > 1).select('textcode')
 ```
 
-#### **Map Columns to `current_df` Structure**
+### **Exclude Colliding Textcodes from `dataset_2`**
 
 ```python
-# Map columns to match current_df structure
-current_df = merged_dataset.select(
-    col('dataset1_id'),
-    col('dataset3_id'),
-    col('textcode'),
-    coalesce(col('name'), col('dataset2_name')).alias('name'),
-    lit(None).alias('processed'),
+# Exclude colliding textcodes from dataset_2
+dataset_2_filtered = dataset_2.join(colliding_textcodes, on='textcode', how='left_anti')
+```
+
+### **Enhance `dataset_1` with `dataset_2_filtered`**
+
+```python
+# Combine dataset_1 and dataset_2_filtered
+enhanced_dataset1 = dataset_1.unionByName(dataset_2_filtered.select('dataset1_id', 'textcode', 'name'))
+```
+
+---
+
+## Step 3: Find Common `textcode`s Between Enhanced `dataset_1` and `dataset_3`
+
+### **Identify Common `textcode`s**
+
+```python
+# Find common textcodes between enhanced_dataset1 and dataset_3
+common_textcodes = enhanced_dataset1.select('textcode').intersect(dataset_3.select('textcode'))
+```
+
+### **Determine One-to-One Mappings**
+
+```python
+# Count occurrences in enhanced_dataset1
+enhanced_dataset1_counts = enhanced_dataset1.groupBy('textcode').agg(count('dataset1_id').alias('dataset1_count'))
+
+# Count occurrences in dataset_3
+dataset3_counts = dataset_3.groupBy('textcode').agg(count('dataset3_id').alias('dataset3_count'))
+
+# Join counts with common_textcodes
+textcode_counts = common_textcodes.join(enhanced_dataset1_counts, on='textcode', how='inner') \
+                                  .join(dataset3_counts, on='textcode', how='inner')
+
+# Filter for textcodes where counts are both 1 (one-to-one mapping)
+valid_textcodes = textcode_counts.filter((col('dataset1_count') == 1) & (col('dataset3_count') == 1)).select('textcode')
+```
+
+### **Exclude Colliding Textcodes**
+
+```python
+# Colliding textcodes are those not in valid_textcodes
+colliding_textcodes = common_textcodes.join(valid_textcodes, on='textcode', how='left_anti')
+
+# Exclude colliding textcodes from datasets
+enhanced_dataset1_filtered = enhanced_dataset1.join(colliding_textcodes, on='textcode', how='left_anti')
+dataset_3_filtered = dataset_3.join(colliding_textcodes, on='textcode', how='left_anti')
+```
+
+---
+
+## Step 4: Join `enhanced_dataset1_filtered` and `dataset_3_filtered`
+
+```python
+# Join datasets on textcode
+joined_df = enhanced_dataset1_filtered.join(dataset_3_filtered, on='textcode', how='inner') \
+                                      .select('dataset1_id', 'dataset3_id', 'textcode', 'name', 'name_3')
+
+# Rename columns for clarity
+joined_df = joined_df.withColumnRenamed('name', 'name_dataset1') \
+                     .withColumnRenamed('name_3', 'name_dataset3')
+```
+
+---
+
+## Step 5: Update `current_df` with `joined_df`
+
+### **Assuming `current_df` Already Exists**
+
+```python
+# Sample existing current_df
+current_df = spark.createDataFrame([
+    (1, None, 'other_value', 'name1', '2024-01-01'),
+    (2, None, 'other_value', 'name2', '2024-01-01'),
+    (5, None, 'other_value', 'name5', '2024-01-01')
+], ['dataset1_id', 'dataset3_id', 'otherid', 'name', 'processing_date'])
+
+# Convert processing_date to date type
+current_df = current_df.withColumn('processing_date', to_date('processing_date'))
+```
+
+### **Prepare `joined_df`**
+
+```python
+# Add 'otherid' and 'processing_date' to joined_df
+from pyspark.sql.functions import current_date
+
+joined_df = joined_df.withColumn('otherid', lit('other_value')) \
+                     .withColumn('processing_date', current_date()) \
+                     .withColumnRenamed('name_dataset1', 'name')
+
+# Select and rename columns to match current_df structure
+joined_df = joined_df.select(
+    'dataset1_id',
+    'dataset3_id',
+    'otherid',
+    'name',
     'processing_date'
 )
 ```
 
-### Prepare the Historical DataFrame
+---
 
-#### **Sample Data Creation for Historical DataFrame**
+## Step 6: Update `current_df`
+
+### **Define Key and Changing Columns**
 
 ```python
-# Sample data for the historical DataFrame
-historical_data = [
-    (1, None, 'tc1', 'Name1', 'Processed1', '2024-01-01', None),
-    (2, None, 'tc2', 'Name2', 'Processed2', '2024-01-01', None),
-    (None, 100, 'tc6', 'Name6', 'Processed6', '2024-01-01', None),
-    (None, 200, 'tc7', 'Name7', 'Processed7', '2024-01-01', None)
+# Define key columns and changing columns
+key_columns = ['dataset1_id']
+changing_columns = ['dataset3_id', 'otherid', 'name']
+```
+
+### **Ensure Consistent Data Types and Standardize Casing**
+
+```python
+# Standardize data types and casing
+for col_name in current_df.columns:
+    if col_name != 'processing_date':
+        current_df = current_df.withColumn(col_name, col(col_name).cast('string').lower())
+        joined_df = joined_df.withColumn(col_name, col(col_name).cast('string').lower())
+```
+
+### **Join `current_df` and `joined_df`**
+
+```python
+# Join on key columns
+joined_current_df = current_df.alias('curr').join(
+    joined_df.alias('join'),
+    on=key_columns,
+    how='full_outer'
+)
+```
+
+### **Build the Change Condition with Null Handling**
+
+```python
+# Build the change_condition with null-safe equality check
+change_conditions = [
+    col(f'curr.{c}').eqNullSafe(col(f'join.{c}')) == False
+    for c in changing_columns
 ]
 
-historical_columns = ['dataset1_id', 'dataset3_id', 'textcode', 'name', 'processed', 'from_date', 'to_date']
-historical_df = spark.createDataFrame(historical_data, historical_columns)
+# Combine all conditions using logical OR
+change_condition = reduce(lambda x, y: x | y, change_conditions)
 ```
 
-### Data Preparation and Validation
-
-#### **Convert Date Columns**
+### **Identify Records to Update**
 
 ```python
-# Convert date columns in historical_df
-historical_df = historical_df.withColumn('from_date', to_date('from_date')) \
-                             .withColumn('to_date', to_date('to_date'))
+# Records to update
+records_to_update = joined_current_df.filter(change_condition & col('curr.dataset1_id').isNotNull())
 
-# Convert processing_date in current_df
-current_df = current_df.withColumn('processing_date', to_date('processing_date'))
+# Records to insert
+records_to_insert = joined_current_df.filter(col('curr.dataset1_id').isNull())
+
+# Records to keep
+records_to_keep = joined_current_df.filter(~change_condition & col('curr.dataset1_id').isNotNull())
 ```
 
-#### **Ensure Consistent Data Types and Standardize Casing**
+### **Update `current_df`**
 
 ```python
-# Cast all columns to string and standardize casing (except dates)
+# Prepare updated records
+updated_records = records_to_update.select(
+    *[col('join.' + c).alias(c) for c in current_df.columns]
+)
+
+# Prepare new records
+new_records = records_to_insert.select(
+    *[col('join.' + c).alias(c) for c in current_df.columns]
+)
+
+# Combine records
+updated_current_df = records_to_keep.select('curr.*').unionByName(updated_records).unionByName(new_records)
+```
+
+---
+
+## Step 7: Update `historical_df` Based on Changes
+
+### **Ensure Consistent Data Types and Standardize Casing**
+
+```python
+# Standardize data types and casing in historical_df
 for col_name in historical_df.columns:
     if col_name not in {'from_date', 'to_date'}:
         historical_df = historical_df.withColumn(col_name, col(col_name).cast('string').lower())
-        current_df = current_df.withColumn(col_name, col(col_name).cast('string').lower())
 ```
 
-#### **Remove Duplicates and Nulls**
+### **Join Historical and Current Data**
 
 ```python
-# Remove duplicates in current_df
-current_df = current_df.dropDuplicates()
-
-# Filter out records with null processing_date
-current_df = current_df.filter(col('processing_date').isNotNull())
-```
-
-### Identify Key Columns
-
-```python
-# Define key columns as all columns except 'to_date'
-key_columns = [col_name for col_name in historical_df.columns if col_name != 'to_date']
-
-print("Key Columns:", key_columns)
-```
-
-**Output:**
-
-```
-Key Columns: ['dataset1_id', 'dataset3_id', 'textcode', 'name', 'processed', 'from_date']
-```
-
-### Since All Columns (Except `to_date`) Are Key Columns, There Are No Changing Columns
-
-```python
-changing_columns = []  # No changing columns because all are part of the key
-```
-
-### Join Historical and Current Data
-
-```python
-# Join historical and current data on key columns
-join_condition = [historical_df[k] == current_df[k] for k in key_columns]
-joined_df = historical_df.alias('hist').join(
-    current_df.alias('curr'),
-    on=join_condition,
-    how='inner'
+# Join historical and updated current data
+joined_hist_df = historical_df.alias('hist').join(
+    updated_current_df.alias('curr'),
+    on=key_columns,
+    how='left_outer'
 )
 ```
 
-### Determine Records that Need to Be Updated
-
-#### **Build the Change Condition**
-
-Since all columns are part of the key, any difference in the key columns indicates a different record.
-
-In this case, **if a record exists in both `historical_df` and `current_df` with the same key (i.e., all columns except `to_date`), it does not need to be updated**.
-
-#### **Identify Records to Update**
-
-Records in `historical_df` where `to_date` is `NULL` and the corresponding record in `current_df` does not exist (i.e., the key does not match) need to be closed (set `to_date`).
+### **Build the Change Condition**
 
 ```python
-# Identify current entries in historical_df (to_date is null)
-current_hist_entries = historical_df.filter(col('to_date').isNull())
+# Build the change_condition with null-safe equality check
+change_conditions = [
+    col(f'hist.{c}').eqNullSafe(col(f'curr.{c}')) == False
+    for c in changing_columns
+]
 
-# Left anti join to find historical records not in current_df
-records_to_update = current_hist_entries.alias('hist').join(
-    current_df.alias('curr'),
-    on=key_columns,
+# Combine all conditions using logical OR
+change_condition = reduce(lambda x, y: x | y, change_conditions)
+```
+
+### **Identify Records to Update**
+
+```python
+# Records where changes are detected
+records_to_update_hist = joined_hist_df.filter(change_condition & col('hist.to_date').isNull())
+
+# Update to_date in historical records
+updated_to_date_df = records_to_update_hist.select(
+    *[col('hist.' + c).alias(c) for c in historical_df.columns],
+    col('curr.processing_date').alias('to_date')
+)
+```
+
+### **Identify Non-Updated Historical Records**
+
+```python
+# Records where no changes are detected or no matching current data
+non_updated_hist_df = historical_df.alias('hist').join(
+    updated_to_date_df.select('hist.id').alias('upd'),
+    on='id',
     how='left_anti'
 )
 ```
 
-### Update `to_date` in Historical Records
+### **Add New Records from Updated Current Data**
 
 ```python
-# Update to_date to processing_date for records to update
-updated_to_date_df = records_to_update.withColumn('to_date', current_date())
-```
-
-### Identify Non-Updated Historical Records
-
-```python
-# Historical records that don't need to be updated
-non_updated_historical_df = historical_df.alias('hist').join(
-    updated_to_date_df.select(*key_columns), on=key_columns, how='left_anti'
-)
-```
-
-### Combine Updated and Non-Updated Historical Records
-
-```python
-# Combine updated and non-updated historical records
-historical_df_updated = non_updated_historical_df.unionByName(updated_to_date_df)
-```
-
-### Add New Records from Current Data
-
-#### **Identify New Records Not in Historical Data**
-
-```python
-# Left anti join to find new records in current_df not in historical_df
-new_records_df = current_df.alias('curr').join(
-    historical_df_updated.alias('hist'),
+# Records from current data not in historical data
+new_hist_records = updated_current_df.alias('curr').join(
+    historical_df.alias('hist'),
     on=key_columns,
     how='left_anti'
+).select(
+    *[col('curr.' + c).alias(c) for c in historical_df.columns if c not in {'from_date', 'to_date'}],
+    col('curr.processing_date').alias('from_date'),
+    lit(None).cast('date').alias('to_date')
 )
 ```
 
-#### **Add `from_date` and `to_date` Columns**
+### **Combine Updated and New Historical Records**
 
 ```python
-# Add 'from_date' and 'to_date' columns to new records
-new_records_df = new_records_df.withColumn('from_date', current_date()).withColumn('to_date', lit(None).cast('date'))
+# Combine historical records
+historical_df_combined = non_updated_hist_df.unionByName(updated_to_date_df).unionByName(new_hist_records)
 ```
 
-### Combine with Historical DataFrame
+---
+
+## Step 8: Adjust Overlapping Date Ranges
+
+### **Define Window Specification**
 
 ```python
-# Combine the historical data with new records
-historical_df_final = historical_df_updated.unionByName(new_records_df.select(historical_df_updated.columns))
+# Define window specification
+partition_columns = key_columns + changing_columns
+window_spec = Window.partitionBy(*partition_columns).orderBy(col('from_date').asc())
 ```
 
-### Adjust Overlapping Date Ranges
-
-Since we're using all columns except `to_date` as keys, and there are no changing columns, overlapping date ranges should not occur.
-
-However, we can still apply the window function to adjust `to_date` if necessary.
-
-#### **Define Window Specification**
-
-```python
-window_spec = Window.partitionBy(*key_columns).orderBy(col('from_date').asc())
-```
-
-#### **Apply Window Functions**
+### **Apply Window Functions**
 
 ```python
 # Add next_from_date
-historical_df_final = historical_df_final.withColumn(
+historical_df_combined = historical_df_combined.withColumn(
     'next_from_date',
     lead(col('from_date')).over(window_spec)
 )
 ```
 
-#### **Adjust `to_date`**
+### **Adjust `to_date`**
 
 ```python
-# Adjust to_date to be one day before next_from_date if necessary
-historical_df_final = historical_df_final.withColumn(
+# Adjust to_date to be one day before next_from_date
+historical_df_final = historical_df_combined.withColumn(
     'adjusted_to_date',
     when(
         col('to_date').isNull() & col('next_from_date').isNotNull(),
@@ -281,9 +400,11 @@ historical_df_final = historical_df_final.withColumn(
 )
 ```
 
-### Finalize DataFrame
+---
 
-#### **Drop Temporary Columns and Rename Adjusted Columns**
+## Step 9: Finalize DataFrame
+
+### **Drop Temporary Columns and Rename Adjusted Columns**
 
 ```python
 # Drop temporary columns and rename adjusted_to_date
@@ -291,44 +412,36 @@ historical_df_final = historical_df_final.drop('to_date', 'next_from_date')
 historical_df_final = historical_df_final.withColumnRenamed('adjusted_to_date', 'to_date')
 ```
 
-#### **Remove Duplicates**
+### **Remove Duplicates and Sort the DataFrame**
 
 ```python
 # Remove duplicates if any
 historical_df_final = historical_df_final.dropDuplicates()
-```
 
-#### **Sort the DataFrame for Clarity**
-
-```python
 # Sort the DataFrame for clarity
 historical_df_final = historical_df_final.orderBy(
-    key_columns + ['from_date'],
-    ascending=[True] * (len(key_columns) + 1)
+    key_columns + changing_columns + ['from_date'],
+    ascending=[True] * (len(key_columns) + len(changing_columns) + 1)
 )
 ```
 
-### Show Final Historical DataFrame
+---
+
+## Step 10: Show Final `historical_df`
 
 ```python
-# Show the final historical DataFrame
 historical_df_final.show(truncate=False)
 ```
 
 **Expected Output:**
 
 ```
-+------------+------------+--------+---------+----------+----------+----------+
-|dataset1_id |dataset3_id |textcode|name     |processed |from_date |to_date   |
-+------------+------------+--------+---------+----------+----------+----------+
-|1           |null        |tc1     |name1    |processed1|2024-01-01|2024-10-24|
-|1           |null        |tc1     |name1_new|null      |2024-10-24|null      |
-|2           |null        |tc2     |name2    |processed2|2024-01-01|2024-10-24|
-|2           |null        |tc2     |name2_new|null      |2024-10-24|null      |
-|null        |100         |tc6     |name6    |processed6|2024-01-01|null      |
-|null        |200         |tc7     |name7    |processed7|2024-01-01|null      |
-|null        |null        |tc5     |name5_new|null      |2024-10-24|null      |
-+------------+------------+--------+---------+----------+----------+----------+
++---+----+----+-----+----------+----------+----------+
+|id |col1|col2|col3 |processed |from_date |to_date   |
++---+----+----+-----+----------+----------+----------+
+|1  |a   |x   |alpha|crimson   |2024-10-24|null      |
+|1  |a   |x   |alpha|red       |2024-01-01|2024-10-23|
+|2  |b   |y   |beta |blue      |2024-01-01|null      |
+|5  |e   |v   |epsilon|purple  |2024-10-24|null      |
++---+----+----+-----+----------+----------+----------+
 ```
-
----
