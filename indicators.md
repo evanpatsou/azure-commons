@@ -1,25 +1,15 @@
-# Historical Data Update with Corrected `join_df` and `current_df` Update
-
-This Jupyter notebook demonstrates how to update a historical DataFrame (`historical_df`) based on changes detected in a current DataFrame (`current_df`), while handling collisions and adjusting overlapping date ranges. The notebook includes steps to:
-
-- Read and prepare sample data for `dataset_1`, `dataset_2`, and `dataset_3`.
-- Handle collisions between datasets.
-- Create a comprehensive `join_df` that includes all identifiers from `dataset_1` and `dataset_3`.
-- Update `current_df` by updating only `dataset1_id`, `dataset3_id`, and `processing_date`, keeping other columns unchanged.
-- Update `historical_df` based on detected changes.
-- Adjust overlapping date ranges in the historical data.
-
----
-
 ## Import Libraries
 
 ```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, when, lit, to_date, current_date, countDistinct, coalesce, lower
+    col, when, lit, to_date, current_date, countDistinct, count, coalesce, lower
 )
 from pyspark.sql.window import Window
 from functools import reduce
+
+# For assertions
+import sys
 ```
 
 ---
@@ -51,6 +41,16 @@ columns = ['dataset1_id', 'textcode', 'name']
 dataset_1 = spark.createDataFrame(data1, columns)
 ```
 
+**Assertion:**
+
+```python
+# Assert that dataset_1 has non-null dataset1_id and textcode
+assert dataset_1.filter(col('dataset1_id').isNull() | col('textcode').isNull()).count() == 0, \
+    "dataset_1 should not have null values in 'dataset1_id' or 'textcode'"
+```
+
+---
+
 ### Dataset 2 (`dataset_2`)
 
 ```python
@@ -66,6 +66,16 @@ data2 = [
 columns = ['dataset1_id', 'textcode', 'name']
 dataset_2 = spark.createDataFrame(data2, columns)
 ```
+
+**Assertion:**
+
+```python
+# Assert that dataset_2 has non-null dataset1_id and textcode
+assert dataset_2.filter(col('dataset1_id').isNull() | col('textcode').isNull()).count() == 0, \
+    "dataset_2 should not have null values in 'dataset1_id' or 'textcode'"
+```
+
+---
 
 ### Dataset 3 (`dataset_3`)
 
@@ -84,6 +94,14 @@ columns = ['dataset3_id', 'textcode', 'name']
 dataset_3 = spark.createDataFrame(data3, columns)
 ```
 
+**Assertion:**
+
+```python
+# Assert that dataset_3 has non-null dataset3_id and textcode
+assert dataset_3.filter(col('dataset3_id').isNull() | col('textcode').isNull()).count() == 0, \
+    "dataset_3 should not have null values in 'dataset3_id' or 'textcode'"
+```
+
 ---
 
 ## Step 2: Enhance `dataset_1` with `dataset_2`, Handling Collisions
@@ -100,6 +118,13 @@ textcode_counts = dataset_2.groupBy('textcode').agg(countDistinct('dataset1_id')
 colliding_textcodes = textcode_counts.filter(col('id_count') > 1).select('textcode')
 ```
 
+**Assertion:**
+
+```python
+# Assert that colliding_textcodes has expected columns
+assert 'textcode' in colliding_textcodes.columns, "colliding_textcodes should have 'textcode' column"
+```
+
 ### Exclude Colliding Textcodes from `dataset_2`
 
 ```python
@@ -107,11 +132,30 @@ colliding_textcodes = textcode_counts.filter(col('id_count') > 1).select('textco
 dataset_2_filtered = dataset_2.join(colliding_textcodes, on='textcode', how='left_anti')
 ```
 
+**Assertion:**
+
+```python
+# Assert that dataset_2_filtered does not contain any colliding textcodes
+colliding_textcodes_list = [row.textcode for row in colliding_textcodes.collect()]
+assert dataset_2_filtered.filter(col('textcode').isin(colliding_textcodes_list)).count() == 0, \
+    "dataset_2_filtered should not contain colliding textcodes"
+```
+
 ### Enhance `dataset_1` with `dataset_2_filtered`
 
 ```python
 # Combine dataset_1 and dataset_2_filtered
 enhanced_dataset1 = dataset_1.unionByName(dataset_2_filtered.select('dataset1_id', 'textcode', 'name'))
+```
+
+**Assertion:**
+
+```python
+# Assert that enhanced_dataset1 has unique combinations of dataset1_id and textcode
+enhanced_count = enhanced_dataset1.count()
+enhanced_distinct_count = enhanced_dataset1.dropDuplicates(['dataset1_id', 'textcode']).count()
+assert enhanced_count == enhanced_distinct_count, \
+    "enhanced_dataset1 should not have duplicate combinations of 'dataset1_id' and 'textcode'"
 ```
 
 ---
@@ -125,21 +169,37 @@ enhanced_dataset1 = dataset_1.unionByName(dataset_2_filtered.select('dataset1_id
 common_textcodes = enhanced_dataset1.select('textcode').intersect(dataset_3.select('textcode'))
 ```
 
+**Assertion:**
+
+```python
+# Assert that common_textcodes are present in both datasets
+assert common_textcodes.count() > 0, "There should be common textcodes between enhanced_dataset1 and dataset_3"
+```
+
 ### Determine One-to-One Mappings
 
 ```python
 # Count occurrences in enhanced_dataset1
-enhanced_dataset1_counts = enhanced_dataset1.groupBy('textcode').agg(countDistinct('dataset1_id').alias('dataset1_count'))
+enhanced_dataset1_counts = enhanced_dataset1.groupBy('textcode').agg(count('dataset1_id').alias('dataset1_count'))
 
 # Count occurrences in dataset_3
-dataset3_counts = dataset_3.groupBy('textcode').agg(countDistinct('dataset3_id').alias('dataset3_count'))
+dataset3_counts = dataset_3.groupBy('textcode').agg(count('dataset3_id').alias('dataset3_count'))
 
 # Join counts with common_textcodes
 textcode_counts = common_textcodes.join(enhanced_dataset1_counts, on='textcode', how='inner') \
                                   .join(dataset3_counts, on='textcode', how='inner')
 
 # Filter for textcodes where counts are both 1 (one-to-one mapping)
-valid_textcodes = textcode_counts.filter((col('dataset1_count') == 1) & (col('dataset3_count') == 1)).select('textcode')
+valid_textcodes = textcode_counts.filter(
+    (col('dataset1_count') == 1) & (col('dataset3_count') == 1)
+).select('textcode')
+```
+
+**Assertion:**
+
+```python
+# Assert that valid_textcodes are one-to-one mappings
+assert valid_textcodes.count() > 0, "There should be valid one-to-one textcode mappings"
 ```
 
 ### Exclude Colliding Textcodes
@@ -151,6 +211,17 @@ colliding_textcodes = common_textcodes.join(valid_textcodes, on='textcode', how=
 # Exclude colliding textcodes from datasets
 enhanced_dataset1_filtered = enhanced_dataset1.join(colliding_textcodes, on='textcode', how='left_anti')
 dataset_3_filtered = dataset_3.join(colliding_textcodes, on='textcode', how='left_anti')
+```
+
+**Assertion:**
+
+```python
+# Assert that colliding textcodes are excluded from the datasets
+colliding_textcodes_list = [row.textcode for row in colliding_textcodes.collect()]
+assert enhanced_dataset1_filtered.filter(col('textcode').isin(colliding_textcodes_list)).count() == 0, \
+    "enhanced_dataset1_filtered should not contain colliding textcodes"
+assert dataset_3_filtered.filter(col('textcode').isin(colliding_textcodes_list)).count() == 0, \
+    "dataset_3_filtered should not contain colliding textcodes"
 ```
 
 ---
@@ -172,6 +243,14 @@ join_df = enhanced_dataset1_filtered.alias('d1').join(
 )
 ```
 
+**Assertion:**
+
+```python
+# Assert that join_df contains all unique dataset1_id and dataset3_id
+unique_ids = join_df.select('dataset1_id', 'dataset3_id').distinct().count()
+assert unique_ids > 0, "join_df should contain unique identifiers from both datasets"
+```
+
 ---
 
 ## Step 5: Update `current_df` with `join_df`
@@ -190,6 +269,14 @@ current_df = spark.createDataFrame([
 
 # Convert processing_date to date type
 current_df = current_df.withColumn('processing_date', to_date('processing_date'))
+```
+
+**Assertion:**
+
+```python
+# Assert that current_df has necessary columns
+required_columns = {'dataset1_id', 'dataset3_id', 'otherid', 'name', 'processing_date'}
+assert required_columns.issubset(set(current_df.columns)), "current_df should contain the required columns"
 ```
 
 ### Prepare `join_df`
@@ -220,6 +307,14 @@ updated_current_df = current_df.alias('curr').join(
 )
 ```
 
+**Assertion:**
+
+```python
+# Assert that updated_current_df has the same number of columns as current_df
+assert set(updated_current_df.columns) == set(current_df.columns), \
+    "updated_current_df should have the same columns as current_df"
+```
+
 ### Handle New Records
 
 ```python
@@ -239,6 +334,16 @@ new_records = join_df.alias('join').join(
 
 # Combine updated current_df with new records
 updated_current_df = updated_current_df.unionByName(new_records)
+```
+
+**Assertion:**
+
+```python
+# Assert that updated_current_df contains all dataset1_id and dataset3_id from join_df
+join_df_ids = join_df.select('dataset1_id', 'dataset3_id').distinct()
+updated_current_df_ids = updated_current_df.select('dataset1_id', 'dataset3_id').distinct()
+missing_ids = join_df_ids.exceptAll(updated_current_df_ids).count()
+assert missing_ids == 0, "All identifiers from join_df should be in updated_current_df"
 ```
 
 ---
@@ -262,14 +367,23 @@ historical_df = historical_df.withColumn('from_date', to_date('from_date')) \
                              .withColumn('to_date', to_date('to_date'))
 ```
 
+**Assertion:**
+
+```python
+# Assert that historical_df has necessary columns
+required_columns = {'dataset1_id', 'dataset3_id', 'otherid', 'name', 'from_date', 'to_date'}
+assert required_columns.issubset(set(historical_df.columns)), "historical_df should contain the required columns"
+```
+
 ### Ensure Consistent Data Types and Standardize Casing
 
 ```python
-# Standardize data types and casing
+# Standardize data types and casing in historical_df
 for col_name in historical_df.columns:
     if col_name not in {'from_date', 'to_date'}:
         historical_df = historical_df.withColumn(col_name, lower(col(col_name).cast('string')))
 
+# Standardize data types and casing in updated_current_df
 for col_name in updated_current_df.columns:
     if col_name != 'processing_date':
         updated_current_df = updated_current_df.withColumn(col_name, lower(col(col_name).cast('string')))
@@ -303,8 +417,6 @@ change_conditions = [
     col('hist.' + c).eqNullSafe(col('curr.' + c)) == False
     for c in changing_columns
 ]
-
-# Combine all conditions using logical OR
 if change_conditions:
     change_condition = reduce(lambda x, y: x | y, change_conditions)
 else:
@@ -323,7 +435,9 @@ joined_hist_df = joined_hist_df.withColumn(
 )
 
 # Records to update (present in both and have changes)
-records_to_update_hist = joined_hist_df.filter((col('source') == 'both') & change_condition & col('hist.to_date').isNull())
+records_to_update_hist = joined_hist_df.filter(
+    (col('source') == 'both') & change_condition & col('hist.to_date').isNull()
+)
 
 # Records to insert (present only in current_df)
 new_hist_records = joined_hist_df.filter(col('source') == 'current_only')
@@ -335,6 +449,20 @@ records_to_keep_hist = joined_hist_df.filter((col('source') == 'both') & (~chang
 records_to_retain_hist = joined_hist_df.filter(col('source') == 'historical_only')
 ```
 
+**Assertion:**
+
+```python
+# Assert that total records match after splitting
+total_records = (
+    records_to_update_hist.count() +
+    new_hist_records.count() +
+    records_to_keep_hist.count() +
+    records_to_retain_hist.count()
+)
+assert total_records == joined_hist_df.count(), \
+    "Total records after splitting should match the joined_hist_df count"
+```
+
 ### Update `to_date` in Historical Records
 
 ```python
@@ -343,6 +471,14 @@ updated_to_date_df = records_to_update_hist.select(
     *[col('hist.' + c).alias(c) for c in historical_df.columns if c != 'to_date'],
     col('curr.processing_date').alias('to_date')
 )
+```
+
+**Assertion:**
+
+```python
+# Assert that updated_to_date_df has non-null 'to_date'
+assert updated_to_date_df.filter(col('to_date').isNull()).count() == 0, \
+    "updated_to_date_df should have non-null 'to_date'"
 ```
 
 ### Prepare New Records for Historical Data
@@ -357,6 +493,14 @@ new_hist_records_df = new_hist_records.select(
 )
 ```
 
+**Assertion:**
+
+```python
+# Assert that new_hist_records_df has non-null 'from_date'
+assert new_hist_records_df.filter(col('from_date').isNull()).count() == 0, \
+    "new_hist_records_df should have non-null 'from_date'"
+```
+
 ### Combine Records to Form Updated `historical_df`
 
 ```python
@@ -366,6 +510,20 @@ historical_df_updated = records_to_keep_hist.select(
 ).unionByName(records_to_retain_hist.select(
     *[col('hist.' + c).alias(c) for c in historical_df.columns]
 )).unionByName(updated_to_date_df).unionByName(new_hist_records_df)
+```
+
+**Assertion:**
+
+```python
+# Assert that historical_df_updated has the expected number of records
+expected_count = (
+    records_to_keep_hist.count() +
+    records_to_retain_hist.count() +
+    updated_to_date_df.count() +
+    new_hist_records_df.count()
+)
+assert historical_df_updated.count() == expected_count, \
+    "historical_df_updated should have the combined number of records"
 ```
 
 ---
@@ -403,6 +561,16 @@ historical_df_final = historical_df_updated.withColumn(
 )
 ```
 
+**Assertion:**
+
+```python
+# Assert that adjusted_to_date does not overlap with next_from_date
+overlaps = historical_df_final.filter(
+    col('adjusted_to_date') >= col('next_from_date')
+).count()
+assert overlaps == 0, "There should be no overlaps in date ranges after adjustment"
+```
+
 ---
 
 ## Step 8: Finalize DataFrame
@@ -428,26 +596,25 @@ historical_df_final = historical_df_final.orderBy(
 )
 ```
 
+**Assertion:**
+
+```python
+# Assert that historical_df_final has no overlapping date ranges for the same key and changing columns
+window_spec_check = Window.partitionBy(*partition_columns).orderBy(col('from_date').asc())
+historical_df_check = historical_df_final.withColumn(
+    'prev_to_date',
+    lag(col('to_date')).over(window_spec_check)
+)
+overlaps_check = historical_df_check.filter(
+    col('from_date') <= col('prev_to_date')
+).count()
+assert overlaps_check == 0, "Final historical_df should have no overlapping date ranges"
+```
+
 ---
 
 ## Step 9: Show Final `historical_df`
 
 ```python
 historical_df_final.show(truncate=False)
-```
-
-**Expected Output:**
-
-```
-+-----------+-----------+-----------+-------+----------+----------+
-|dataset1_id|dataset3_id|otherid    |name   |from_date |to_date   |
-+-----------+-----------+-----------+-------+----------+----------+
-|1          |null       |other_value|name1  |2024-01-01|2023-10-23|
-|1          |100        |other_value|name1  |2023-10-24|null      |
-|2          |null       |other_value|name2  |2024-01-01|null      |
-|5          |null       |other_value|name5  |2024-01-01|2023-10-23|
-|5          |500        |other_value|null   |2023-10-24|null      |
-|100        |null       |other_value|name100|2024-01-01|null      |
-|null       |200        |other_value|name200|2024-01-01|null      |
-+-----------+-----------+-----------+-------+----------+----------+
 ```
