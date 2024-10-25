@@ -1,23 +1,10 @@
-# Historical Data Update with Collision Handling and Date Adjustments
-
-This Jupyter notebook demonstrates how to update a historical DataFrame (`historical_df`) based on changes detected in a current DataFrame (`current_df`), while handling collisions and adjusting overlapping date ranges. The notebook includes steps to:
-
-- Read and prepare sample data for `dataset_1`, `dataset_2`, and `dataset_3`.
-- Handle collisions between datasets.
-- Create and update `current_df`.
-- Update `historical_df` based on detected changes.
-- Adjust overlapping date ranges in the historical data.
-- Save the updated `historical_df` to a PostgreSQL database.
-
----
-
 ## Import Libraries
 
 ```python
 # Import necessary libraries
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, when, lit, to_date, row_number, lead, date_sub, current_date, countDistinct, coalesce
+    col, when, lit, to_date, row_number, lead, date_sub, current_date, countDistinct, coalesce, lower
 )
 from pyspark.sql.window import Window
 from functools import reduce
@@ -179,7 +166,9 @@ joined_df = joined_df.withColumnRenamed('name', 'name_dataset1') \
 current_df = spark.createDataFrame([
     (1, None, 'other_value', 'name1', '2024-01-01'),
     (2, None, 'other_value', 'name2', '2024-01-01'),
-    (5, None, 'other_value', 'name5', '2024-01-01')
+    (5, None, 'other_value', 'name5', '2024-01-01'),
+    (100, None, 'other_value', 'name100', '2024-01-01'),
+    (None, 200, 'other_value', 'name200', '2024-01-01')
 ], ['dataset1_id', 'dataset3_id', 'otherid', 'name', 'processing_date'])
 
 # Convert processing_date to date type
@@ -206,16 +195,28 @@ joined_df = joined_df.select(
 )
 ```
 
+### **Create a Matching Key (`match_id`)**
+
+To handle the cases where either `dataset1_id` or `dataset3_id` may be null, we'll create a `match_id` column.
+
+```python
+# Create match_id in current_df
+current_df = current_df.withColumn('match_id', coalesce(col('dataset1_id'), col('dataset3_id')))
+
+# Create match_id in joined_df
+joined_df = joined_df.withColumn('match_id', coalesce(col('dataset1_id'), col('dataset3_id')))
+```
+
 ---
 
-## Step 6: Update `current_df`
+## Step 6: Update `current_df` Based on `dataset1_id` or `dataset3_id`
 
 ### **Define Key and Changing Columns**
 
 ```python
 # Define key columns and changing columns
-key_columns = ['dataset1_id']
-changing_columns = ['dataset3_id', 'otherid', 'name']
+key_columns = ['match_id']
+changing_columns = ['dataset1_id', 'dataset3_id', 'otherid', 'name']
 ```
 
 ### **Ensure Consistent Data Types and Standardize Casing**
@@ -224,14 +225,14 @@ changing_columns = ['dataset3_id', 'otherid', 'name']
 # Standardize data types and casing
 for col_name in current_df.columns:
     if col_name != 'processing_date':
-        current_df = current_df.withColumn(col_name, col(col_name).cast('string').lower())
-        joined_df = joined_df.withColumn(col_name, col(col_name).cast('string').lower())
+        current_df = current_df.withColumn(col_name, lower(col(col_name).cast('string')))
+        joined_df = joined_df.withColumn(col_name, lower(col(col_name).cast('string')))
 ```
 
-### **Join `current_df` and `joined_df`**
+### **Join `current_df` and `joined_df` on `match_id`**
 
 ```python
-# Join on key columns
+# Join on match_id
 joined_current_df = current_df.alias('curr').join(
     joined_df.alias('join'),
     on=key_columns,
@@ -249,60 +250,107 @@ change_conditions = [
 ]
 
 # Combine all conditions using logical OR
-change_condition = reduce(lambda x, y: x | y, change_conditions)
+if change_conditions:
+    change_condition = reduce(lambda x, y: x | y, change_conditions)
+else:
+    change_condition = lit(False)
 ```
 
-### **Identify Records to Update**
+### **Identify Records to Update, Insert, or Keep**
 
 ```python
 # Records to update
-records_to_update = joined_current_df.filter(change_condition & col('curr.dataset1_id').isNotNull())
+records_to_update = joined_current_df.filter(change_condition & col('curr.match_id').isNotNull())
 
 # Records to insert
-records_to_insert = joined_current_df.filter(col('curr.dataset1_id').isNull())
+records_to_insert = joined_current_df.filter(col('curr.match_id').isNull())
 
 # Records to keep
-records_to_keep = joined_current_df.filter(~change_condition & col('curr.dataset1_id').isNotNull())
+records_to_keep = joined_current_df.filter(~change_condition & col('curr.match_id').isNotNull())
 ```
 
-### **Update `current_df`**
+### **Prepare Updated Records**
 
 ```python
 # Prepare updated records
 updated_records = records_to_update.select(
-    *[col('join.' + c).alias(c) for c in current_df.columns]
+    *[col('join.' + c).alias(c) for c in current_df.columns if c != 'match_id'],
+    'match_id'
 )
+```
 
+### **Prepare New Records**
+
+```python
 # Prepare new records
 new_records = records_to_insert.select(
-    *[col('join.' + c).alias(c) for c in current_df.columns]
+    *[col('join.' + c).alias(c) for c in current_df.columns if c != 'match_id'],
+    'match_id'
 )
+```
 
+### **Combine Records to Form Updated `current_df`**
+
+```python
 # Combine records
-updated_current_df = records_to_keep.select('curr.*').unionByName(updated_records).unionByName(new_records)
+updated_current_df = records_to_keep.select(
+    *[col('curr.' + c).alias(c) for c in current_df.columns if c != 'match_id'],
+    'match_id'
+).unionByName(updated_records).unionByName(new_records)
+```
+
+### **Drop Temporary Column `match_id`**
+
+```python
+# Drop 'match_id' column
+updated_current_df = updated_current_df.drop('match_id')
 ```
 
 ---
 
 ## Step 7: Update `historical_df` Based on Changes
 
+### **Assuming `historical_df` Already Exists**
+
+```python
+# Sample historical_df
+historical_df = spark.createDataFrame([
+    (1, None, 'other_value', 'name1', '2024-01-01', None),
+    (2, None, 'other_value', 'name2', '2024-01-01', None),
+    (5, None, 'other_value', 'name5', '2024-01-01', None),
+    (100, None, 'other_value', 'name100', '2024-01-01', None),
+    (None, 200, 'other_value', 'name200', '2024-01-01', None)
+], ['dataset1_id', 'dataset3_id', 'otherid', 'name', 'from_date', 'to_date'])
+
+# Convert date columns
+historical_df = historical_df.withColumn('from_date', to_date('from_date')) \
+                             .withColumn('to_date', to_date('to_date'))
+```
+
+### **Create `match_id` in `historical_df`**
+
+```python
+# Create match_id in historical_df
+historical_df = historical_df.withColumn('match_id', coalesce(col('dataset1_id'), col('dataset3_id')))
+```
+
 ### **Ensure Consistent Data Types and Standardize Casing**
 
 ```python
-# Standardize data types and casing in historical_df
+# Standardize data types and casing
 for col_name in historical_df.columns:
-    if col_name not in {'from_date', 'to_date'}:
-        historical_df = historical_df.withColumn(col_name, col(col_name).cast('string').lower())
+    if col_name not in {'from_date', 'to_date', 'match_id'}:
+        historical_df = historical_df.withColumn(col_name, lower(col(col_name).cast('string')))
 ```
 
-### **Join Historical and Current Data**
+### **Join Historical and Updated Current Data**
 
 ```python
-# Join historical and updated current data
+# Join on match_id
 joined_hist_df = historical_df.alias('hist').join(
     updated_current_df.alias('curr'),
-    on=key_columns,
-    how='left_outer'
+    on='match_id',
+    how='full_outer'
 )
 ```
 
@@ -312,18 +360,23 @@ joined_hist_df = historical_df.alias('hist').join(
 # Build the change_condition with null-safe equality check
 change_conditions = [
     col(f'hist.{c}').eqNullSafe(col(f'curr.{c}')) == False
-    for c in changing_columns
+    for c in ['dataset1_id', 'dataset3_id', 'otherid', 'name']
 ]
 
 # Combine all conditions using logical OR
-change_condition = reduce(lambda x, y: x | y, change_conditions)
+if change_conditions:
+    change_condition = reduce(lambda x, y: x | y, change_conditions)
+else:
+    change_condition = lit(False)
 ```
 
 ### **Identify Records to Update**
 
 ```python
 # Records where changes are detected
-records_to_update_hist = joined_hist_df.filter(change_condition & col('hist.to_date').isNull())
+records_to_update_hist = joined_hist_df.filter(
+    change_condition & col('hist.to_date').isNull() & col('hist.match_id').isNotNull()
+)
 
 # Update to_date in historical records
 updated_to_date_df = records_to_update_hist.select(
@@ -337,8 +390,8 @@ updated_to_date_df = records_to_update_hist.select(
 ```python
 # Records where no changes are detected or no matching current data
 non_updated_hist_df = historical_df.alias('hist').join(
-    updated_to_date_df.select('hist.id').alias('upd'),
-    on='id',
+    updated_to_date_df.select('hist.match_id').alias('upd'),
+    on='match_id',
     how='left_anti'
 )
 ```
@@ -349,12 +402,16 @@ non_updated_hist_df = historical_df.alias('hist').join(
 # Records from current data not in historical data
 new_hist_records = updated_current_df.alias('curr').join(
     historical_df.alias('hist'),
-    on=key_columns,
+    on='match_id',
     how='left_anti'
 ).select(
-    *[col('curr.' + c).alias(c) for c in historical_df.columns if c not in {'from_date', 'to_date'}],
+    'curr.dataset1_id',
+    'curr.dataset3_id',
+    'curr.otherid',
+    'curr.name',
     col('curr.processing_date').alias('from_date'),
-    lit(None).cast('date').alias('to_date')
+    lit(None).cast('date').alias('to_date'),
+    'curr.match_id'
 )
 ```
 
@@ -373,7 +430,7 @@ historical_df_combined = non_updated_hist_df.unionByName(updated_to_date_df).uni
 
 ```python
 # Define window specification
-partition_columns = key_columns + changing_columns
+partition_columns = ['match_id', 'dataset1_id', 'dataset3_id', 'otherid', 'name']
 window_spec = Window.partitionBy(*partition_columns).orderBy(col('from_date').asc())
 ```
 
@@ -408,7 +465,7 @@ historical_df_final = historical_df_combined.withColumn(
 
 ```python
 # Drop temporary columns and rename adjusted_to_date
-historical_df_final = historical_df_final.drop('to_date', 'next_from_date')
+historical_df_final = historical_df_final.drop('to_date', 'next_from_date', 'match_id')
 historical_df_final = historical_df_final.withColumnRenamed('adjusted_to_date', 'to_date')
 ```
 
@@ -420,8 +477,8 @@ historical_df_final = historical_df_final.dropDuplicates()
 
 # Sort the DataFrame for clarity
 historical_df_final = historical_df_final.orderBy(
-    key_columns + changing_columns + ['from_date'],
-    ascending=[True] * (len(key_columns) + len(changing_columns) + 1)
+    ['dataset1_id', 'dataset3_id', 'otherid', 'name', 'from_date'],
+    ascending=[True] * 5
 )
 ```
 
@@ -436,12 +493,15 @@ historical_df_final.show(truncate=False)
 **Expected Output:**
 
 ```
-+---+----+----+-----+----------+----------+----------+
-|id |col1|col2|col3 |processed |from_date |to_date   |
-+---+----+----+-----+----------+----------+----------+
-|1  |a   |x   |alpha|crimson   |2024-10-24|null      |
-|1  |a   |x   |alpha|red       |2024-01-01|2024-10-23|
-|2  |b   |y   |beta |blue      |2024-01-01|null      |
-|5  |e   |v   |epsilon|purple  |2024-10-24|null      |
-+---+----+----+-----+----------+----------+----------+
++-----------+-----------+-----------+-------+----------+----------+
+|dataset1_id|dataset3_id|otherid    |name   |from_date |to_date   |
++-----------+-----------+-----------+-------+----------+----------+
+|1          |null       |other_value|name1  |2024-01-01|2023-10-23|
+|1          |100        |other_value|name1  |2023-10-24|null      |
+|2          |null       |other_value|name2  |2024-01-01|null      |
+|5          |null       |other_value|name5  |2024-01-01|2023-10-23|
+|5          |500        |other_value|name5a |2023-10-24|null      |
+|100        |null       |other_value|name100|2024-01-01|null      |
+|null       |200        |other_value|name200|2024-01-01|null      |
++-----------+-----------+-----------+-------+----------+----------+
 ```
