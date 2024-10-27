@@ -1,3 +1,17 @@
+# Historical Data Update with Collision Handling, Column Mismatch Resolution, and Assertions
+
+This Jupyter notebook demonstrates how to update a historical DataFrame (`historical_df`) based on changes detected in a current DataFrame (`current_df`), while handling collisions, resolving column mismatches, and adjusting overlapping date ranges. The notebook includes steps to:
+
+- Read and prepare sample data for `dataset_1`, `dataset_2`, and `dataset_3`.
+- Handle collisions between datasets.
+- Create a comprehensive `join_df` that includes all identifiers from `dataset_1` and `dataset_3`.
+- Update `current_df` by handling mismatched columns and preventing duplications.
+- Update `historical_df` based on detected changes.
+- Adjust overlapping date ranges in the historical data.
+- **Include assertions after each step to verify the results and ensure data integrity.**
+
+---
+
 ## Import Libraries
 
 ```python
@@ -246,7 +260,7 @@ assert unique_ids > 0, "join_df should contain unique identifiers from both data
 
 ---
 
-## Step 5: Update `current_df` with `join_df` by Handling Column Mismatch
+## Step 5: Update `current_df` with `join_df` by Handling Column Mismatch and Preventing Duplications
 
 ### Assuming `current_df` Already Exists
 
@@ -275,30 +289,28 @@ join_df = join_df.withColumn('processing_date', current_date())
 
 ---
 
-### Update `current_df` While Handling Column Mismatch
+### Update `current_df` While Handling Column Mismatch and Preventing Duplications
 
 ```python
-# Get all columns from 'current_df' and 'join_df'
-current_columns = current_df.columns
-join_columns = join_df.columns
+# Get all columns from 'current_df' and 'join_df' as sets
+current_columns = set(current_df.columns)
+join_columns = set(join_df.columns)
 
 # Identify date columns
-date_columns = ['processing_date']
+date_columns = {'processing_date'}
 
 # Identify key columns (assuming known keys)
-key_columns = ['dataset1_id', 'dataset3_id']
+key_columns = {'dataset1_id', 'dataset3_id'}
 
-# Identify columns common to both DataFrames
-common_columns = list(set(current_columns).intersection(set(join_columns)) - set(date_columns))
-
-# Identify columns unique to 'current_df' and 'join_df'
-current_only_columns = list(set(current_columns) - set(join_columns) - set(date_columns))
-join_only_columns = list(set(join_columns) - set(current_columns) - set(date_columns))
+# Identify columns unique to 'current_df' and 'join_df', excluding keys and date columns
+current_only_columns = current_columns - join_columns - date_columns - key_columns
+join_only_columns = join_columns - current_columns - date_columns - key_columns
+common_columns = (current_columns & join_columns) - date_columns - key_columns
 
 # Join 'current_df' and 'join_df' on key columns
-updated_current_df = current_df.alias('curr').join(
+joined_current_df = current_df.alias('curr').join(
     join_df.alias('join'),
-    on=key_columns,
+    on=list(key_columns),
     how='full_outer'
 )
 
@@ -335,69 +347,96 @@ select_expr.append(
 )
 
 # Build the 'updated_current_df'
-updated_current_df = updated_current_df.select(*select_expr)
+updated_current_df = joined_current_df.select(*select_expr)
+
+# Handle new records (present only in 'join_df')
+# (This step is included in the above selection due to the full_outer join and coalesce)
+
+# Ensure no duplicates
+updated_current_df = updated_current_df.dropDuplicates(current_df.columns)
 
 # Assertion: 'updated_current_df' should have the same columns as 'current_df' plus any new columns from 'join_df'
-expected_columns = set(current_columns).union(set(join_only_columns))
+expected_columns = current_columns.union(join_only_columns)
 assert set(updated_current_df.columns) == expected_columns, \
     "updated_current_df should have the correct set of columns"
+
+# Optional: If you prefer to keep the same schema as 'current_df', drop extra columns
+# updated_current_df = updated_current_df.select(*current_df.columns)
 ```
 
 ---
 
-### Handle New Entries
+### Apply Similar Logic as `historical_df` for Updates and Insertions
 
 ```python
-# Identify new records present only in 'join_df'
-new_records = join_df.alias('join').join(
-    current_df.alias('curr'),
-    on=key_columns,
-    how='left_anti'
+# Identify the source of each record
+joined_current_df = joined_current_df.withColumn(
+    'source',
+    when(col('curr.' + list(key_columns)[0]).isNull(), lit('join_only'))
+    .when(col('join.' + list(key_columns)[0]).isNull(), lit('current_only'))
+    .otherwise(lit('both'))
 )
 
-# Build select expressions for 'new_records'
-new_select_expr = []
+# Build the change condition for common columns
+change_conditions = [
+    col('curr.' + c).eqNullSafe(col('join.' + c)) == False
+    for c in common_columns
+]
 
-# For key columns
-for col_name in key_columns:
-    new_select_expr.append(col('join.' + col_name))
+if change_conditions:
+    change_condition = reduce(lambda x, y: x | y, change_conditions)
+else:
+    change_condition = lit(False)
 
-# For common columns (excluding keys and dates)
-for col_name in common_columns:
-    new_select_expr.append(col('join.' + col_name))
+# Categorize records
+records_in_current_only = joined_current_df.filter(col('source') == 'current_only')
+records_in_join_only = joined_current_df.filter(col('source') == 'join_only')
+records_in_both = joined_current_df.filter(col('source') == 'both')
 
-# For columns only in 'current_df', fill with None
-for col_name in current_only_columns:
-    new_select_expr.append(lit(None).cast('string').alias(col_name))
+records_to_update = records_in_both.filter(change_condition)
+records_to_keep = records_in_both.filter(~change_condition)
 
-# For columns only in 'join_df'
-for col_name in join_only_columns:
-    new_select_expr.append(col('join.' + col_name))
+# Build DataFrames for each category
+select_expr_curr = [col('curr.' + c).alias(c) for c in current_df.columns]
 
-# Add the 'processing_date' column
-new_select_expr.append(col('join.processing_date'))
+# Records to keep as is
+records_to_keep_df = records_to_keep.select(*select_expr_curr)
 
-new_records = new_records.select(*new_select_expr)
+# Records to update
+select_expr_update = []
+for col_name in current_df.columns:
+    if col_name in key_columns or col_name in common_columns:
+        select_expr_update.append(
+            coalesce(col('join.' + col_name), col('curr.' + col_name)).alias(col_name)
+        )
+    else:
+        select_expr_update.append(col('curr.' + col_name).alias(col_name))
+records_to_update_df = records_to_update.select(*select_expr_update)
 
-# Combine 'updated_current_df' with 'new_records'
-updated_current_df = updated_current_df.unionByName(new_records, allowMissingColumns=True)
+# New records from join_df
+select_expr_new = []
+for col_name in current_df.columns:
+    if col_name in join_df.columns:
+        select_expr_new.append(col('join.' + col_name).alias(col_name))
+    else:
+        select_expr_new.append(lit(None).cast('string').alias(col_name))
+records_new_df = records_in_join_only.select(*select_expr_new)
+
+# Combine all records
+updated_current_df = records_to_keep_df.unionByName(records_to_update_df).unionByName(records_new_df)
+
+# Include records present only in current_df if desired
+records_in_current_only_df = records_in_current_only.select(*select_expr_curr)
+updated_current_df = updated_current_df.unionByName(records_in_current_only_df)
+
+# Ensure no duplicates
+updated_current_df = updated_current_df.dropDuplicates(current_df.columns)
 
 # Assertion: All identifiers from 'join_df' should be in 'updated_current_df'
 join_df_ids = join_df.select(*key_columns).distinct()
 updated_current_df_ids = updated_current_df.select(*key_columns).distinct()
 missing_ids = join_df_ids.exceptAll(updated_current_df_ids).count()
 assert missing_ids == 0, "All identifiers from join_df should be in updated_current_df"
-```
-
----
-
-### Handle Missing Columns in 'updated_current_df'
-
-Since `join_df` may introduce new columns not present in `current_df`, we need to ensure that `updated_current_df` has a consistent schema. If we prefer to keep the same schema as `current_df`, we can drop any extra columns after the union.
-
-```python
-# If desired, align 'updated_current_df' columns to match 'current_df'
-updated_current_df = updated_current_df.select(current_columns)
 ```
 
 ---
