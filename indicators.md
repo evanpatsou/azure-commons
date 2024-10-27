@@ -1,24 +1,10 @@
-# Historical Data Update with Collision Handling, Column Mismatch Resolution, and Assertions
-
-This Jupyter notebook demonstrates how to update a historical DataFrame (`historical_df`) based on changes detected in a current DataFrame (`current_df`), while handling collisions, resolving column mismatches, and adjusting overlapping date ranges. The notebook includes steps to:
-
-- Read and prepare sample data for `dataset_1`, `dataset_2`, and `dataset_3`.
-- Handle collisions between datasets.
-- Create a comprehensive `join_df` that includes all identifiers from `dataset_1` and `dataset_3`.
-- Update `current_df` by handling mismatched columns and preventing duplications.
-- Update `historical_df` based on detected changes.
-- Adjust overlapping date ranges in the historical data.
-- **Include assertions after each step to verify the results and ensure data integrity.**
-
----
-
 ## Import Libraries
 
 ```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, when, lit, to_date, current_date, countDistinct, count, coalesce, lower, trim,
-    date_sub, lead, lag
+    date_sub, lead, lag, greatest
 )
 from pyspark.sql.window import Window
 from functools import reduce
@@ -260,7 +246,7 @@ assert unique_ids > 0, "join_df should contain unique identifiers from both data
 
 ---
 
-## Step 5: Update `current_df` with `join_df` by Handling Column Mismatch and Preventing Duplications
+## Step 5: Update `current_df` with `join_df` by Giving Priority to `current_df` Data
 
 ### Assuming `current_df` Already Exists
 
@@ -289,7 +275,7 @@ join_df = join_df.withColumn('processing_date', current_date())
 
 ---
 
-### Update `current_df` While Handling Column Mismatch and Preventing Duplications
+### Update `current_df` While Giving Priority to `current_df` Data
 
 ```python
 # Get all columns from 'current_df' and 'join_df' as sets
@@ -322,28 +308,28 @@ for col_name in key_columns:
     curr_col = col('curr.' + col_name)
     join_col = col('join.' + col_name)
     select_expr.append(
-        coalesce(join_col, curr_col).alias(col_name)
+        coalesce(curr_col, join_col).alias(col_name)
     )
 
-# For common columns (excluding keys and dates)
+# For common columns (excluding keys and dates), give priority to 'curr'
 for col_name in common_columns:
     curr_col = col('curr.' + col_name)
     join_col = col('join.' + col_name)
     select_expr.append(
-        coalesce(join_col, curr_col).alias(col_name)
+        coalesce(curr_col, join_col).alias(col_name)
     )
 
 # For columns only in 'current_df'
 for col_name in current_only_columns:
     select_expr.append(col('curr.' + col_name).alias(col_name))
 
-# For columns only in 'join_df'
+# For columns only in 'join_df', include them
 for col_name in join_only_columns:
     select_expr.append(col('join.' + col_name).alias(col_name))
 
-# Add the 'processing_date' column
+# Add the 'processing_date' column, giving priority to 'curr.processing_date'
 select_expr.append(
-    coalesce(col('join.processing_date'), col('curr.processing_date')).alias('processing_date')
+    coalesce(col('curr.processing_date'), col('join.processing_date')).alias('processing_date')
 )
 
 # Build the 'updated_current_df'
@@ -377,7 +363,7 @@ joined_current_df = joined_current_df.withColumn(
     .otherwise(lit('both'))
 )
 
-# Build the change condition for common columns
+# Build the change condition for common columns (giving priority to 'curr')
 change_conditions = [
     col('curr.' + c).eqNullSafe(col('join.' + c)) == False
     for c in common_columns
@@ -402,18 +388,20 @@ select_expr_curr = [col('curr.' + c).alias(c) for c in current_df.columns]
 # Records to keep as is
 records_to_keep_df = records_to_keep.select(*select_expr_curr)
 
-# Records to update
+# Records to update (giving priority to 'curr' data)
 select_expr_update = []
 for col_name in current_df.columns:
     if col_name in key_columns or col_name in common_columns:
+        curr_col = col('curr.' + col_name)
+        join_col = col('join.' + col_name)
         select_expr_update.append(
-            coalesce(col('join.' + col_name), col('curr.' + col_name)).alias(col_name)
+            coalesce(curr_col, join_col).alias(col_name)
         )
     else:
         select_expr_update.append(col('curr.' + col_name).alias(col_name))
 records_to_update_df = records_to_update.select(*select_expr_update)
 
-# New records from join_df
+# New records from join_df (since they are not in 'curr', we take data from 'join')
 select_expr_new = []
 for col_name in current_df.columns:
     if col_name in join_df.columns:
@@ -425,7 +413,7 @@ records_new_df = records_in_join_only.select(*select_expr_new)
 # Combine all records
 updated_current_df = records_to_keep_df.unionByName(records_to_update_df).unionByName(records_new_df)
 
-# Include records present only in current_df if desired
+# Include records present only in current_df
 records_in_current_only_df = records_in_current_only.select(*select_expr_curr)
 updated_current_df = updated_current_df.unionByName(records_in_current_only_df)
 
