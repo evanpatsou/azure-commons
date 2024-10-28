@@ -722,3 +722,51 @@ new_records_null_identifiers = new_records.filter(
     col('country_code').isNotNull() | col('industry_code').isNotNull()
 ).count()
 assert new_records_null_identifiers == 0, "Only new records should have NULL in 'country_code' and 'industry_code'"
+
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, count, row_number
+from pyspark.sql.window import Window
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("DropDuplicatesKeepMostInfo").getOrCreate()
+
+# Sample data with duplicates
+data = [
+    (1, "A", None, 10),
+    (1, "A", "Info1", 20),
+    (2, "B", "Info2", None),
+    (2, "B", "Info3", 30),
+    (3, "C", None, None)
+]
+
+columns = ["id", "category", "info", "value"]
+df = spark.createDataFrame(data, columns)
+
+# Display original DataFrame
+print("Original DataFrame:")
+df.show()
+
+# Define duplicate criteria
+duplicate_subset = ["id", "category"]
+
+# Add a column that counts non-null values in each row
+df_with_count = df.withColumn(
+    "non_null_count",
+    count("*").over(Window.partitionBy(*duplicate_subset))
+)
+
+# Assign row numbers based on non_null_count descending
+window_spec = Window.partitionBy(*duplicate_subset).orderBy(col("non_null_count").desc())
+
+df_ranked = df.withColumn(
+    "row_num",
+    row_number().over(window_spec)
+)
+
+# Filter to keep only the first row in each duplicate group
+df_deduped = df_ranked.filter(col("row_num") == 1).drop("row_num")
+
+# Display deduplicated DataFrame
+print("Deduplicated DataFrame (Keeping Row with Most Non-Null Values):")
+df_deduped.show()
