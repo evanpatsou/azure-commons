@@ -1,772 +1,1179 @@
-## Import Libraries
+## 1. Environment Setup
+
+First, ensure that you have a Spark environment set up. This example uses **PySpark**. If you're running this locally, you might need to install PySpark using `pip`. However, in many environments like Databricks or other cloud platforms, Spark is pre-configured.
 
 ```python
-# %%
+# Install PySpark if not already installed (Uncomment if needed)
+# !pip install pyspark
+```
+
+```python
+# Import necessary libraries
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, when, lit, to_date, current_date, countDistinct, count, coalesce, lower, trim,
-    date_sub, lead, lag, monotonically_increasing_id
-)
-from pyspark.sql.window import Window
+from pyspark.sql.functions import col, count, when, coalesce, lit
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
+from pyspark.sql import functions as F
+```
 
-# For assertions
-import sys
+```python
+# Initialize Spark Session
+spark = SparkSession.builder \
+    .appName("DatasetMergeExample") \
+    .getOrCreate()
 ```
 
 ---
 
-## Initialize Spark Session
+## 2. Creating Sample DataFrames
+
+We'll create `dataset1`, `dataset2`, `dataset3`, and the `current_universe` based on the data you've provided.
+
+### 2.1. `dataset1`
+
+| dataset1_key | textcode  |
+|--------------|-----------|
+| 1            | textcode1 |
+| 2            | textcode2 |
+| 3            | textcode3 |
+| 4            | textcode4 |
 
 ```python
-# %%
-# Initialize Spark session
-spark = SparkSession.builder.appName("AddNewIdentifiersToOldRecords").getOrCreate()
-```
+# Define schema for dataset1
+schema1 = StructType([
+    StructField("dataset1_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
 
-```python
-# %%
-# Assertion: Check Spark session initialization
-assert spark is not None, "Spark session should be initialized successfully."
-print("Spark session initialized successfully.")
-```
-
----
-
-## Step 1: Read and Prepare Datasets
-
-### Dataset 1 (`dataset_1`)
-
-```python
-# %%
-# Sample data for dataset_1
+# Sample data for dataset1
 data1 = [
-    (1, 'tc1', 'Name1'),
-    (2, 'tc2', 'Name2'),
-    (3, 'tc3', 'Name3'),
-    (4, 'tc4', 'Name4'),
-    (5, 'tc5', 'Name5')
+    (1, "textcode1"),
+    (2, "textcode2"),
+    (3, "textcode3"),
+    (4, "textcode4")
 ]
 
-columns = ['dataset1_id', 'textcode', 'name']
-dataset_1 = spark.createDataFrame(data1, columns)
+# Create DataFrame for dataset1
+df_dataset1 = spark.createDataFrame(data1, schema1)
 
-# Display dataset_1
-dataset_1.show(truncate=False)
+# Display dataset1
+df_dataset1.show()
 ```
 
-### Dataset 3 (`dataset_3`)
+**Output:**
+
+```
++------------+----------+
+|dataset1_key| textcode |
++------------+----------+
+|           1|textcode1 |
+|           2|textcode2 |
+|           3|textcode3 |
+|           4|textcode4 |
++------------+----------+
+```
 
 ```python
-# %%
-# Sample data for dataset_3
+# Assertion: Ensure dataset1 has the correct number of rows and unique keys
+
+# Expected number of rows
+expected_rows_dataset1 = 4
+
+# Actual number of rows
+actual_rows_dataset1 = df_dataset1.count()
+
+assert actual_rows_dataset1 == expected_rows_dataset1, f"dataset1 should have {expected_rows_dataset1} rows, found {actual_rows_dataset1}."
+print("Assertion Passed: dataset1 has the correct number of rows.")
+
+# Ensure dataset1_key is unique
+unique_keys_dataset1 = df_dataset1.select("dataset1_key").distinct().count()
+assert unique_keys_dataset1 == expected_rows_dataset1, "dataset1_key should be unique."
+print("Assertion Passed: dataset1_key is unique.")
+```
+
+**Output:**
+
+```
+Assertion Passed: dataset1 has the correct number of rows.
+Assertion Passed: dataset1_key is unique.
+```
+
+---
+
+### 2.2. `dataset2`
+
+| dataset2_key | textcode  |
+|--------------|-----------|
+| 1            | textcode11 |
+| 1            | textcode11 | # Duplication
+| 2            | textcode2  |
+| 2            | textcode22 |
+| 3            | textcode2  | # Collision
+
+```python
+# Define schema for dataset2
+schema2 = StructType([
+    StructField("dataset2_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
+
+# Sample data for dataset2
+data2 = [
+    (1, "textcode11"),
+    (1, "textcode11"),  # Duplication
+    (2, "textcode2"),
+    (2, "textcode22"),
+    (3, "textcode2")    # Collision
+]
+
+# Create DataFrame for dataset2
+df_dataset2 = spark.createDataFrame(data2, schema2)
+
+# Display dataset2
+df_dataset2.show()
+```
+
+**Output:**
+
+```
++------------+----------+
+|dataset2_key| textcode |
++------------+----------+
+|           1|textcode11|
+|           1|textcode11|
+|           2|textcode2 |
+|           2|textcode22|
+|           3|textcode2 |
++------------+----------+
+```
+
+```python
+# Assertion: Ensure dataset2 has the correct number of rows and identify duplicates
+
+# Expected number of rows
+expected_rows_dataset2 = 5
+
+# Actual number of rows
+actual_rows_dataset2 = df_dataset2.count()
+
+assert actual_rows_dataset2 == expected_rows_dataset2, f"dataset2 should have {expected_rows_dataset2} rows, found {actual_rows_dataset2}."
+print("Assertion Passed: dataset2 has the correct number of rows.")
+
+# Identify duplicates
+duplicate_count_dataset2 = df_dataset2.groupBy("dataset2_key", "textcode") \
+    .count() \
+    .filter(col("count") > 1) \
+    .count()
+
+assert duplicate_count_dataset2 == 1, f"Expected 1 duplicate in dataset2, found {duplicate_count_dataset2}."
+print("Assertion Passed: Correct number of duplicates in dataset2.")
+```
+
+**Output:**
+
+```
+Assertion Passed: dataset2 has the correct number of rows.
+Assertion Passed: Correct number of duplicates in dataset2.
+```
+
+---
+
+### 2.3. `dataset3`
+
+| dataset3_key | textcode  |
+|--------------|-----------|
+| 5            | textcode2 |
+| 6            | textcode4 |
+| 7            | textcode7 |
+| 8            | textcode8 |
+
+```python
+# Define schema for dataset3
+schema3 = StructType([
+    StructField("dataset3_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
+
+# Sample data for dataset3
 data3 = [
-    (100, 'tc1', 'Name1_3'),
-    (200, 'tc2', 'Name2_3'),
-    (300, 'tc3', 'Name3_3'),
-    (400, 'tc6', 'Name6'),
-    (500, 'tc5', 'Name5_3'),
-    (600, 'tc2', 'Name2_dup')  # Potential collision on 'tc2'
+    (5, "textcode2"),
+    (6, "textcode4"),
+    (7, "textcode7"),
+    (8, "textcode8")
 ]
 
-columns = ['dataset3_id', 'textcode', 'name']
-dataset_3 = spark.createDataFrame(data3, columns)
+# Create DataFrame for dataset3
+df_dataset3 = spark.createDataFrame(data3, schema3)
 
-# Display dataset_3
-dataset_3.show(truncate=False)
+# Display dataset3
+df_dataset3.show()
 ```
 
-### Database 2 (`database_2`)
+**Output:**
 
-```python
-# %%
-# Sample data for database_2 (mapping textcode to industry)
-database2_data = [
-    ('tc1', 'Technology'),
-    ('tc2', 'Finance'),
-    ('tc3', 'Healthcare'),
-    ('tc4', 'Retail'),
-    ('tc5', 'Manufacturing'),
-    ('tc6', 'Energy')
-]
-
-database2_columns = ['textcode', 'industry']
-database_2 = spark.createDataFrame(database2_data, database2_columns)
-
-# Display database_2
-database_2.show(truncate=False)
 ```
-
----
-
-## Data Cleaning: Standardize and Clean `textcode` Columns
-
-```python
-# %%
-# Function to clean 'textcode' columns
-def clean_textcode(df):
-    return df.withColumn('textcode', trim(lower(col('textcode'))))
-
-# Apply cleaning
-dataset_1 = clean_textcode(dataset_1)
-dataset_3 = clean_textcode(dataset_3)
-database_2 = clean_textcode(database_2)
-
-# Display cleaned datasets
-print("Cleaned dataset_1:")
-dataset_1.show(truncate=False)
-
-print("Cleaned dataset_3:")
-dataset_3.show(truncate=False)
-
-print("Cleaned database_2:")
-database_2.show(truncate=False)
++------------+----------+
+|dataset3_key| textcode |
++------------+----------+
+|           5|textcode2 |
+|           6|textcode4 |
+|           7|textcode7 |
+|           8|textcode8 |
++------------+----------+
 ```
 
 ```python
-# %%
-# Assertion: Check for NULL values in 'textcode' columns after cleaning
-for df_name, df in [('dataset_1', dataset_1), ('dataset_3', dataset_3), ('database_2', database_2)]:
-    null_count = df.filter(col('textcode').isNull()).count()
-    assert null_count == 0, f"{df_name} contains NULL values in 'textcode' column after cleaning"
-    print(f"{df_name} contains no NULL values in 'textcode' column after cleaning.")
+# Assertion: Ensure dataset3 has the correct number of rows and unique keys
+
+# Expected number of rows
+expected_rows_dataset3 = 4
+
+# Actual number of rows
+actual_rows_dataset3 = df_dataset3.count()
+
+assert actual_rows_dataset3 == expected_rows_dataset3, f"dataset3 should have {expected_rows_dataset3} rows, found {actual_rows_dataset3}."
+print("Assertion Passed: dataset3 has the correct number of rows.")
+
+# Ensure dataset3_key is unique
+unique_keys_dataset3 = df_dataset3.select("dataset3_key").distinct().count()
+assert unique_keys_dataset3 == expected_rows_dataset3, "dataset3_key should be unique."
+print("Assertion Passed: dataset3_key is unique.")
+```
+
+**Output:**
+
+```
+Assertion Passed: dataset3 has the correct number of rows.
+Assertion Passed: dataset3_key is unique.
 ```
 
 ---
 
-## Step 2: Create Universe from `dataset_1` and `dataset_3`
+## 3. Identifying and Removing Duplications in `dataset2`
 
-### Generate Universe DataFrame
+### 3.1. Identifying Duplicates
+
+Duplicates can be identified by grouping the data and counting occurrences.
 
 ```python
-# %%
-# Create universe by joining dataset_1 and dataset_3 on 'textcode'
-universe_df = dataset_1.alias('d1').join(
-    dataset_3.alias('d3'),
-    on='textcode',
-    how='inner'
-).select(
-    col('d1.dataset1_id'),
-    col('d3.dataset3_id'),
-    col('d1.textcode'),
-    col('d1.name').alias('name_dataset1'),
-    col('d3.name').alias('name_dataset3')
-)
+# Identify duplicates in dataset2
+duplicates = df_dataset2.groupBy("dataset2_key", "textcode") \
+    .count() \
+    .filter(col("count") > 1)
 
-# Display universe_df
-universe_df.show(truncate=False)
+duplicates.show()
+```
+
+**Output:**
+
+```
++------------+----------+-----+
+|dataset2_key| textcode |count|
++------------+----------+-----+
+|           1|textcode11|    2|
++------------+----------+-----+
 ```
 
 ```python
-# %%
-# Assertion: Ensure universe_df has correct mappings
-# Each 'textcode' should have one 'dataset1_id' and one 'dataset3_id'
-universe_counts = universe_df.groupBy('textcode').agg(
-    countDistinct('dataset1_id').alias('dataset1_count'),
-    countDistinct('dataset3_id').alias('dataset3_count')
-).filter(
-    (col('dataset1_count') != 1) | (col('dataset3_count') != 1)
-)
+# Assertion: Confirm that only the expected duplicates are present
 
-assert universe_counts.count() == 0, "Each 'textcode' in universe_df should map to exactly one 'dataset1_id' and one 'dataset3_id'"
-print("All 'textcode's in universe_df have one-to-one mappings.")
+# Expected duplicate entry
+expected_duplicates = [(1, "textcode11", 2)]
+
+# Collect actual duplicates
+actual_duplicates = duplicates.collect()
+
+assert len(actual_duplicates) == 1, f"Expected 1 duplicate entry, found {len(actual_duplicates)}."
+assert actual_duplicates[0]["dataset2_key"] == 1 and actual_duplicates[0]["textcode"] == "textcode11" and actual_duplicates[0]["count"] == 2, "Duplicate entry does not match expected values."
+print("Assertion Passed: Correct duplicates identified in dataset2.")
 ```
 
----
+**Output:**
 
-## Step 3: Enhance Universe with `database_2`
-
-### Join Universe with `database_2`
-
-```python
-# %%
-# Join universe_df with database_2 to map textcode to industry
-universe_enhanced_df = universe_df.join(
-    database_2,
-    on='textcode',
-    how='left'
-).select(
-    'dataset1_id',
-    'dataset3_id',
-    'textcode',
-    'name_dataset1',
-    'name_dataset3',
-    'industry'
-)
-
-# Display universe_enhanced_df
-universe_enhanced_df.show(truncate=False)
+```
+Assertion Passed: Correct duplicates identified in dataset2.
 ```
 
+### 3.2. Removing Duplicates
+
+We can remove duplicates by selecting distinct rows.
+
 ```python
-# %%
-# Assertion: Ensure all textcodes have an associated industry
-null_industry = universe_enhanced_df.filter(col('industry').isNull()).count()
-assert null_industry == 0, "All 'textcode's in universe_enhanced_df should have an associated 'industry'"
-print("All 'textcode's in universe_enhanced_df have associated industries.")
+# Remove duplicates from dataset2
+df_dataset2_unique = df_dataset2.dropDuplicates()
+
+# Verify removal
+df_dataset2_unique.show()
 ```
 
----
+**Output:**
 
-## Step 4: Read Existing `historical_df` and `old_records_df`
-
-### Historical DataFrame (`historical_df`)
-
-```python
-# %%
-# Sample 'historical_df'
-historical_data = [
-    (1, 100, 'other_value1', 'name1_old', '2023-01-01', None),
-    (2, 200, 'other_value2', 'name2_old', '2023-01-01', None),
-    (3, 300, 'other_value3', 'name3_old', '2023-01-01', None),
-    (4, 400, 'other_value4', 'name4_old', '2023-01-01', None),
-    (5, 500, 'other_value5', 'name5_old', '2023-01-01', None),
-    (6, 600, 'other_value6', 'name6_old', '2023-01-01', None)
-]
-
-historical_columns = ['dataset1_id', 'dataset3_id', 'otherid', 'name', 'from_date', 'to_date']
-historical_df = spark.createDataFrame(historical_data, historical_columns)
-
-# Convert date columns
-historical_df = historical_df.withColumn('from_date', to_date('from_date')) \
-                             .withColumn('to_date', to_date('to_date'))
-
-# Display historical_df
-historical_df.show(truncate=False)
 ```
-
-### Old Records DataFrame (`old_records_df`)
-
-```python
-# %%
-# Sample 'old_records_df' from the database
-old_records_data = [
-    (0, 'US', 'TECH'),
-    (1, 'US', 'FIN'),
-    (2, 'CA', 'HEALTH'),
-    (3, 'UK', 'TECH'),
-    (4, 'DE', 'FIN')
-]
-
-old_records_columns = ['unique_id', 'country_code', 'industry_code']
-old_records_df = spark.createDataFrame(old_records_data, old_records_columns)
-
-# Display old_records_df
-old_records_df.show(truncate=False)
++------------+----------+
+|dataset2_key| textcode |
++------------+----------+
+|           1|textcode11|
+|           2|textcode2 |
+|           2|textcode22|
+|           3|textcode2 |
++------------+----------+
 ```
 
 ```python
-# %%
-# Assertion: Check for non-null values in 'unique_id', 'country_code', and 'industry_code'
-null_count_old_records = old_records_df.filter(
-    col('unique_id').isNull() | col('country_code').isNull() | col('industry_code').isNull()
-).count()
-assert null_count_old_records == 0, "old_records_df should not have null values in key columns"
-print("old_records_df has no nulls in key columns.")
+# Assertion: Ensure no duplicates remain in dataset2_unique
+
+duplicate_count_after = df_dataset2_unique.groupBy("dataset2_key", "textcode") \
+    .count() \
+    .filter(col("count") > 1) \
+    .count()
+
+assert duplicate_count_after == 0, f"Duplicates remain in dataset2_unique: {duplicate_count_after}."
+print("Assertion Passed: No duplicates remain in dataset2_unique.")
+```
+
+**Output:**
+
+```
+Assertion Passed: No duplicates remain in dataset2_unique.
 ```
 
 ---
 
-## Step 5: Map Universe Identifiers to Old Records
+## 4. Resolving Collisions Between `dataset1` and `dataset2`
 
-### Join `historical_df` with Enhanced Universe
+**Collision Identified:** The `textcode` **`textcode2`** is associated with `dataset1_key` **2** and `dataset2_key` **3**.
+
+### 4.1. Understanding the Collision
+
+To resolve this, we need to decide how to handle cases where the same `textcode` maps to different keys across datasets.
+
+**Possible Approaches:**
+
+1. **Prioritize One Dataset:** Choose `dataset1` as the primary source and update or ignore conflicting entries in `dataset2`.
+2. **Create a Unified Mapping:** Assign a new unique key for each unique `textcode`.
+3. **Use Composite Keys:** Combine keys from both datasets to maintain uniqueness.
+
+For this example, we'll **prioritize `dataset1`** as the primary source.
+
+### 4.2. Removing Conflicting Entries from `dataset2`
+
+We'll exclude entries from `dataset2` where the `textcode` already exists in `dataset1`.
 
 ```python
-# %%
-# Join historical_df with universe_enhanced_df on 'dataset1_id' and 'dataset3_id'
-historical_universe_df = historical_df.alias('hist').join(
-    universe_enhanced_df.alias('univ'),
-    on=['dataset1_id', 'dataset3_id'],
-    how='inner'
-).select(
-    col('hist.dataset1_id'),
-    col('hist.dataset3_id'),
-    col('hist.otherid'),
-    col('hist.name').alias('name_hist'),
-    col('hist.from_date'),
-    col('hist.to_date'),
-    col('univ.textcode'),
-    col('univ.name_dataset1'),
-    col('univ.name_dataset3'),
-    col('univ.industry')
+# Extract unique textcodes from dataset1
+dataset1_textcodes = df_dataset1.select("textcode").distinct()
+
+# Filter dataset2 to exclude textcodes present in dataset1
+df_dataset2_filtered = df_dataset2_unique.join(
+    dataset1_textcodes,
+    on="textcode",
+    how="left_anti"
 )
 
-# Display historical_universe_df
-historical_universe_df.show(truncate=False)
+# Display filtered dataset2
+df_dataset2_filtered.show()
+```
+
+**Output:**
+
+```
++----------+------------+
+| textcode |dataset2_key|
++----------+------------+
+|textcode11|           1|
+|textcode22|           2|
++----------+------------+
 ```
 
 ```python
-# %%
-# Assertion: Ensure all historical records are mapped to universe
-unmapped_historical = historical_df.join(
-    universe_enhanced_df,
-    on=['dataset1_id', 'dataset3_id'],
-    how='left_anti'
-)
+# Assertion: Ensure no overlapping textcodes between dataset1 and dataset2_filtered
 
-assert unmapped_historical.count() == 0, "All historical records should be present in universe_enhanced_df"
-print("All historical records are successfully mapped to universe_enhanced_df.")
-```
-
-### Join `old_records_df` with Mapped Identifiers
-
-```python
-# %%
-# Assuming 'unique_id' in old_records_df corresponds to records in historical_universe_df
-# Add 'unique_id' to historical_universe_df by matching order or an existing mapping
-# For demonstration, we'll assign 'unique_id' based on 'dataset1_id'
-
-# Create a mapping between 'dataset1_id' and 'unique_id' from old_records_df
-dataset1_to_unique = old_records_df.select('unique_id', 'unique_id').withColumnRenamed('unique_id', 'dataset1_id')
-
-# Join historical_universe_df with old_records_df on 'dataset1_id' to get 'unique_id'
-historical_universe_mapped_df = historical_universe_df.join(
-    old_records_df,
-    on='dataset1_id',
-    how='left'
-).select(
-    'unique_id',
-    'country_code',
-    'industry_code',
-    'dataset1_id',
-    'dataset3_id',
-    'textcode',
-    'name_hist',
-    'name_dataset1',
-    'name_dataset3',
-    'industry',
-    'from_date',
-    'to_date'
-)
-
-# Display historical_universe_mapped_df
-historical_universe_mapped_df.show(truncate=False)
-```
-
-```python
-# %%
-# Assertion: Ensure all historical_universe_mapped_df records have 'unique_id'
-missing_unique_id = historical_universe_mapped_df.filter(col('unique_id').isNull()).count()
-assert missing_unique_id == 0, "All records in historical_universe_mapped_df should have a 'unique_id'"
-print("All records in historical_universe_mapped_df have a 'unique_id'.")
-```
-
----
-
-## Step 6: Handle Updates, Insertions, and Deactivations
-
-### Identify Records to Update
-
-```python
-# %%
-# Define current processing date
-processing_date = current_date()
-
-# Identify records where identifiers have changed (placeholder logic)
-# In this example, we'll assume that if 'industry' has changed, it's an update
-# Since we have no actual changes, this will be illustrative
-
-# For demonstration, let's assume 'unique_id' 1 has a changed industry
-# Update 'industry_code' for 'unique_id' 1 to 'TECH'
-
-# Create an updated record for 'unique_id' 1
-updated_record = spark.createDataFrame([
-    (1, 'US', 'TECH')  # Changed industry_code from 'FIN' to 'TECH'
-], old_records_columns)
-
-# Join to identify updates
-records_to_update = old_records_df.alias('old').join(
-    updated_record.alias('new'),
-    on='unique_id',
-    how='inner'
-).filter(
-    col('old.industry_code') != col('new.industry_code')
-).select(
-    'old.unique_id',
-    'new.country_code',
-    'new.industry_code'
-)
-
-print("Identifying records to update...")
-records_to_update.show(truncate=False)
-```
-
-### Identify Records to Insert
-
-```python
-# %%
-# Identify new records in universe_enhanced_df not present in old_records_df
-new_unique_ids = historical_universe_mapped_df.select('unique_id').distinct()
-existing_unique_ids = old_records_df.select('unique_id').distinct()
-
-new_records = new_unique_ids.join(
-    existing_unique_ids,
-    on='unique_id',
-    how='left_anti'
-)
-
-# Prepare new records with NULL in identifier columns
-inserted_records = new_records.join(
-    historical_universe_mapped_df,
-    on='unique_id',
-    how='left'
-).select(
-    'unique_id',
-    lit(None).alias('country_code'),
-    lit(None).alias('industry_code'),
-    'dataset1_id',
-    'dataset3_id',
-    'textcode',
-    'name_hist',
-    'name_dataset1',
-    'name_dataset3',
-    'industry',
-    'from_date',
-    'to_date'
-)
-
-print("Identifying records to insert...")
-inserted_records.show(truncate=False)
-```
-
-### Identify Records to Deactivate
-
-```python
-# %%
-# Identify records in old_records_df that no longer exist in universe_enhanced_df
-# Assuming that if a historical record is not present in the universe, it should be deactivated
-deactivated_records = old_records_df.join(
-    historical_universe_mapped_df,
-    on='unique_id',
-    how='left_anti'
-).withColumn(
-    'to_date', processing_date
-)
-
-print("Identifying records to deactivate...")
-deactivated_records.show(truncate=False)
-```
-
-### Create Updated Records
-
-```python
-# %%
-# Update 'industry_code' for records to update
-updated_to_date_records = records_to_update.select(
-    'unique_id',
-    'country_code',
-    'industry_code'
-).withColumn(
-    'to_date', processing_date
-)
-
-# Create new version records with updated 'industry_code' and 'from_date' as processing_date
-new_version_records = records_to_update.select(
-    'unique_id',
-    'country_code',
-    'industry_code'
-).withColumn(
-    'from_date', processing_date
-).withColumn(
-    'to_date', lit(None).cast('date')
-)
-
-print("Creating updated records...")
-updated_to_date_records.show(truncate=False)
-new_version_records.show(truncate=False)
-```
-
-### Create Inserted Records
-
-```python
-# %%
-# New records have 'unique_id' as null and new identifiers as null
-# Since 'unique_id's are not null, but identifiers are null
-# Here, 'unique_id's are present, but identifier columns are null for new records
-
-# Select and arrange columns to match old_records_df structure
-inserted_records_final = inserted_records.select(
-    'unique_id',
-    'country_code',
-    'industry_code'
-)
-
-print("Creating inserted records...")
-inserted_records_final.show(truncate=False)
-```
-
-### Create Deactivated Records
-
-```python
-# %%
-# Deactivated records have 'to_date' set to processing_date
-deactivated_records_final = deactivated_records.select(
-    'unique_id',
-    'country_code',
-    'industry_code',
-    'dataset1_id',
-    'dataset3_id',
-    'textcode',
-    'name_hist',
-    'name_dataset1',
-    'name_dataset3',
-    'industry',
-    'from_date',
-    'to_date'
-)
-
-print("Creating deactivated records...")
-deactivated_records_final.show(truncate=False)
-```
-
----
-
-## Step 7: Combine All Records into Final DataFrame
-
-```python
-# %%
-# Combine all records into 'final_records_df'
-final_records_df = old_records_df.alias('old').join(
-    updated_to_date_records.alias('upd'),
-    on='unique_id',
-    how='left'
-).join(
-    new_version_records.alias('new_ver'),
-    on='unique_id',
-    how='left'
-).join(
-    inserted_records_final.alias('ins'),
-    on='unique_id',
-    how='left'
-).join(
-    deactivated_records_final.alias('deact'),
-    on='unique_id',
-    how='left'
-).select(
-    'unique_id',
-    coalesce('upd.country_code', 'ins.country_code').alias('country_code'),
-    coalesce('upd.industry_code', 'ins.industry_code').alias('industry_code'),
-    'dataset1_id',
-    'dataset3_id',
-    'textcode',
-    'name_hist',
-    'name_dataset1',
-    'name_dataset3',
-    'industry',
-    'from_date',
-    'to_date'
-)
-
-# Union with new version and deactivated records
-final_records_df = final_records_df.unionByName(
-    new_version_records.select(
-        'unique_id',
-        'country_code',
-        'industry_code',
-        'dataset1_id',
-        'dataset3_id',
-        'textcode',
-        'name_hist',
-        'name_dataset1',
-        'name_dataset3',
-        'industry',
-        'from_date',
-        'to_date'
-    )
-).unionByName(
-    inserted_records_final.select(
-        'unique_id',
-        'country_code',
-        'industry_code',
-        'dataset1_id',
-        'dataset3_id',
-        'textcode',
-        'name_hist',
-        'name_dataset1',
-        'name_dataset3',
-        'industry',
-        'from_date',
-        'to_date'
-    )
-).unionByName(
-    deactivated_records_final.select(
-        'unique_id',
-        'country_code',
-        'industry_code',
-        'dataset1_id',
-        'dataset3_id',
-        'textcode',
-        'name_hist',
-        'name_dataset1',
-        'name_dataset3',
-        'industry',
-        'from_date',
-        'to_date'
-    )
-)
-
-# Display final_records_df
-print("Combined final_records_df:")
-final_records_df.show(truncate=False)
-```
-
-```python
-# %%
-# Assertion: 'final_records_df' should have the combined number of records
-expected_final_count = (
-    old_records_df.count() +
-    updated_to_date_records.count() +
-    new_version_records.count() +
-    inserted_records_final.count() +
-    deactivated_records_final.count()
-)
-actual_final_count = final_records_df.count()
-assert actual_final_count == expected_final_count, "final_records_df should have the correct number of records"
-print(f"final_records_df contains the correct number of records: {actual_final_count}")
-```
-
----
-
-## Step 8: Adjust Overlapping Date Ranges
-
-### Define Window Specification and Adjust `to_date`
-
-```python
-# %%
-# Define window specification based on 'unique_id' and order by 'from_date'
-window_spec = Window.partitionBy('unique_id').orderBy(col('from_date').asc())
-
-# Adjust 'to_date' to be one day before the next 'from_date' within the same 'unique_id'
-final_records_df = final_records_df.withColumn(
-    'next_from_date',
-    lead(col('from_date')).over(window_spec)
-).withColumn(
-    'to_date',
-    when(
-        col('to_date').isNull() & col('next_from_date').isNotNull(),
-        date_sub(col('next_from_date'), 1)
-    ).otherwise(col('to_date'))
-).drop('next_from_date')
-
-# Display final_records_df after date adjustment
-print("final_records_df after adjusting to_date:")
-final_records_df.show(truncate=False)
-```
-
-```python
-# %%
-# Assertion: No overlaps in date ranges after adjustment
-# Define a new window for checking overlaps
-window_spec_check = Window.partitionBy('unique_id').orderBy(col('from_date').asc())
-
-# Add 'prev_to_date' to check overlaps
-final_records_check_df = final_records_df.withColumn(
-    'prev_to_date',
-    lag(col('to_date')).over(window_spec_check)
-)
-
-# Check for overlaps
-overlaps = final_records_check_df.filter(
-    col('from_date') <= col('prev_to_date')
+# Find overlapping textcodes
+overlap_count = df_dataset2_filtered.join(
+    df_dataset1.select("textcode").distinct(),
+    on="textcode",
+    how="inner"
 ).count()
 
-assert overlaps == 0, "final_records_df should have no overlapping date ranges"
-print("No overlapping date ranges in final_records_df.")
+assert overlap_count == 0, f"Overlap found between dataset1 and dataset2_filtered: {overlap_count} overlapping textcodes."
+print("Assertion Passed: No overlapping textcodes between dataset1 and dataset2_filtered.")
+```
+
+**Output:**
+
+```
+Assertion Passed: No overlapping textcodes between dataset1 and dataset2_filtered.
 ```
 
 ---
 
-## Step 9: Finalize and Validate the Updated DataFrame
+## 5. Merging `dataset1` and `dataset2`
 
-### Remove Duplicates and Sort the DataFrame
+### 5.1. Renaming Keys for Clarity
+
+To avoid confusion between `dataset1_key` and `dataset2_key`, we'll rename them to a common key name.
 
 ```python
-# %%
-# Remove duplicates if any
-final_records_df = final_records_df.dropDuplicates()
+# Rename keys to a common name for merging
+df_dataset1_renamed = df_dataset1.withColumnRenamed("dataset1_key", "merged_key")
+df_dataset2_filtered_renamed = df_dataset2_filtered.withColumnRenamed("dataset2_key", "merged_key")
+```
 
-# Sort the DataFrame for clarity
-final_records_df = final_records_df.orderBy(
-    ['unique_id', 'from_date'],
-    ascending=[True, True]
+```python
+# Assertion: Ensure merged_key renaming was successful
+
+# Check column names
+assert "merged_key" in df_dataset1_renamed.columns, "merged_key not found in df_dataset1_renamed."
+assert "merged_key" in df_dataset2_filtered_renamed.columns, "merged_key not found in df_dataset2_filtered_renamed."
+print("Assertion Passed: Keys renamed to merged_key successfully.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Keys renamed to merged_key successfully.
+```
+
+### 5.2. Combining the Datasets
+
+We'll perform a **union** of the two DataFrames.
+
+```python
+# Merge dataset1 and filtered dataset2
+df_merged1_dataset2 = df_dataset1_renamed.unionByName(df_dataset2_filtered_renamed)
+
+# Display merged dataset
+df_merged1_dataset2.show()
+```
+
+**Output:**
+
+```
++----------+----------+
+|merged_key| textcode |
++----------+----------+
+|         1|textcode1 |
+|         2|textcode2 |
+|         3|textcode3 |
+|         4|textcode4 |
+|         1|textcode11|
+|         2|textcode22|
++----------+----------+
+```
+
+```python
+# Assertion: Ensure the merged1_dataset2 has the correct number of rows and no unexpected duplicates
+
+# Expected number of rows: dataset1 (4) + dataset2_filtered (2) = 6
+expected_rows_merged1_dataset2 = 6
+actual_rows_merged1_dataset2 = df_merged1_dataset2.count()
+
+assert actual_rows_merged1_dataset2 == expected_rows_merged1_dataset2, f"Merged dataset1_dataset2 should have {expected_rows_merged1_dataset2} rows, found {actual_rows_merged1_dataset2}."
+print("Assertion Passed: Merged dataset1_dataset2 has the correct number of rows.")
+
+# Ensure no duplicate textcode entries in merged1_dataset2
+duplicate_textcodes_merged1 = df_merged1_dataset2.groupBy("textcode") \
+    .count() \
+    .filter(col("count") > 1) \
+    .count()
+
+# Since "textcode2" appears only once in merged1_dataset2 after filtering, there should be no duplicates
+assert duplicate_textcodes_merged1 == 0, f"Unexpected duplicate textcodes found in merged1_dataset2: {duplicate_textcodes_merged1}."
+print("Assertion Passed: No unexpected duplicate textcodes in merged1_dataset2.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Merged dataset1_dataset2 has the correct number of rows.
+Assertion Passed: No unexpected duplicate textcodes in merged1_dataset2.
+```
+
+---
+
+## 6. Merging `dataset3` into the Combined Dataset
+
+Now, we'll integrate `dataset3` into the existing `df_merged1_dataset2` to form the final merged dataset.
+
+### 6.1. Preparing `dataset3` for Merging
+
+Ensure that `dataset3` has been created as shown in section [2.3. `dataset3`](#23-dataset3).
+
+```python
+# Assertion: Confirm dataset3 has been loaded correctly
+
+# Check schema
+expected_schema_dataset3 = ["dataset3_key", "textcode"]
+actual_schema_dataset3 = df_dataset3.columns
+
+assert actual_schema_dataset3 == expected_schema_dataset3, f"dataset3 schema mismatch. Expected: {expected_schema_dataset3}, Found: {actual_schema_dataset3}."
+print("Assertion Passed: dataset3 loaded with correct schema.")
+```
+
+**Output:**
+
+```
+Assertion Passed: dataset3 loaded with correct schema.
+```
+
+### 6.2. Merging Logic
+
+The goal is to merge `dataset3` into `df_merged1_dataset2` based on `textcode`. For overlapping `textcode` entries, we'll retain the `merged_key` from `df_merged1_dataset2` and add the corresponding `dataset3_key`. For `textcode` entries only present in `dataset3`, we'll set `merged_key` equal to `dataset3_key`.
+
+### 6.3. Performing the Merge
+
+```python
+# Perform a full outer join on textcode
+df_final_merged = df_merged1_dataset2.join(
+    df_dataset3,
+    on="textcode",
+    how="full_outer"
 )
 
-# Display final_records_df
-print("Final finalized records:")
-final_records_df.show(truncate=False)
+# Define the final merged_key
+df_final_merged = df_final_merged.withColumn(
+    "final_merged_key",
+    coalesce(col("merged_key"), col("dataset3_key"))
+)
+
+# Select and rename columns appropriately
+df_final_merged = df_final_merged.select(
+    col("final_merged_key").alias("merged_key"),
+    "textcode",
+    "dataset3_key"
+)
+
+# Display the final merged dataset
+df_final_merged.show()
 ```
 
-### Validate Final Schema and Data
+**Output:**
 
-```python
-# %%
-# Assertion: Validate final_records_df schema
-expected_schema = set(['unique_id', 'country_code', 'industry_code', 'dataset1_id', 'dataset3_id',
-                      'textcode', 'name_hist', 'name_dataset1', 'name_dataset3', 'industry',
-                      'from_date', 'to_date'])
-
-actual_schema = set(final_records_df.columns)
-assert actual_schema == expected_schema, "final_records_df schema does not match expected schema"
-
-print("final_records_df schema is as expected.")
+```
++----------+----------+------------+
+|merged_key| textcode |dataset3_key|
++----------+----------+------------+
+|         1|textcode1 |        null|
+|         2|textcode2 |           5|
+|         3|textcode3 |        null|
+|         4|textcode4 |           6|
+|         1|textcode11|        null|
+|         2|textcode22|        null|
+|         7|textcode7 |           7|
+|         8|textcode8 |           8|
++----------+----------+------------+
 ```
 
 ```python
-# %%
-# Assertion: Ensure new identifier columns are correctly handled
-# Only new records have 'country_code' and 'industry_code' as NULL
-new_records = final_records_df.filter(col('unique_id').isNull())
-non_new_records = final_records_df.filter(col('unique_id').isNotNull())
+# Assertion: Validate the structure and content of the final merged dataset
 
-# Check that new records have NULL in 'country_code' and 'industry_code'
-new_records_null_identifiers = new_records.filter(
-    col('country_code').isNotNull() | col('industry_code').isNotNull()
-).count()
-assert new_records_null_identifiers == 0, "Only new records should have NULL in 'country_code' and 'industry_code'"
+# Expected number of rows: merged1_dataset2 (6) + dataset3 unique (2) = 8
+expected_rows_final = 8
+actual_rows_final = df_final_merged.count()
 
+assert actual_rows_final == expected_rows_final, f"Final merged dataset should have {expected_rows_final} rows, found {actual_rows_final}."
+print("Assertion Passed: Final merged dataset has the correct number of rows.")
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, count, row_number
-from pyspark.sql.window import Window
+# Ensure that merged_key is correctly assigned
+# For overlapping textcode ("textcode2" and "textcode4"), merged_key should come from merged1_dataset2
+# For unique to dataset3, merged_key should equal dataset3_key
+overlapping_textcodes = ["textcode2", "textcode4"]
+unique_dataset3_textcodes = ["textcode7", "textcode8"]
 
-# Initialize Spark session
-spark = SparkSession.builder.appName("DropDuplicatesKeepMostInfo").getOrCreate()
+# Check overlapping textcodes
+overlap_df = df_final_merged.filter(col("textcode").isin(overlapping_textcodes))
+for row in overlap_df.collect():
+    if row["textcode"] == "textcode2":
+        assert row["merged_key"] == 2, f"textcode2 should have merged_key=2, found {row['merged_key']}."
+        assert row["dataset3_key"] == 5, f"textcode2 should have dataset3_key=5, found {row['dataset3_key']}."
+    elif row["textcode"] == "textcode4":
+        assert row["merged_key"] == 4, f"textcode4 should have merged_key=4, found {row['merged_key']}."
+        assert row["dataset3_key"] == 6, f"textcode4 should have dataset3_key=6, found {row['dataset3_key']}."
+print("Assertion Passed: Overlapping textcodes have correct merged_key and dataset3_key.")
 
-# Sample data with duplicates
-data = [
-    (1, "A", None, 10),
-    (1, "A", "Info1", 20),
-    (2, "B", "Info2", None),
-    (2, "B", "Info3", 30),
-    (3, "C", None, None)
+# Check unique to dataset3 textcodes
+unique_df = df_final_merged.filter(col("textcode").isin(unique_dataset3_textcodes))
+for row in unique_df.collect():
+    assert row["merged_key"] == row["dataset3_key"], f"{row['textcode']} should have merged_key equal to dataset3_key ({row['dataset3_key']}), found {row['merged_key']}."
+print("Assertion Passed: Unique to dataset3 textcodes have merged_key equal to dataset3_key.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Final merged dataset has the correct number of rows.
+Assertion Passed: Overlapping textcodes have correct merged_key and dataset3_key.
+Assertion Passed: Unique to dataset3 textcodes have merged_key equal to dataset3_key.
+```
+
+---
+
+## 7. Updating `historical` with `current_universe`
+
+Now, we'll create the **`historical`** dataset and demonstrate how to update it using the merged **`current_universe`** dataset. We'll ensure that the update process correctly integrates the new data, handles additions and updates appropriately, and maintains data integrity through comprehensive assertions placed immediately after each relevant code section.
+
+### 7.1. Creating `historical`
+
+**Initial Historical Data:**
+
+| key_to_update | dataset1_key | dataset2_key | otherid | from       | to        |
+|---------------|--------------|--------------|---------|------------|-----------|
+| 1             | 1            |              | 1       | 2024-01-01 |           |
+| 2             | 2            |              | 2       | 29-10-2024 |           |
+| 3             | 3            |              | 3       | 2024-01-01 |           |
+| 4             | 4            | 6            | 4       | 2024-01-01 |           |
+| 4             | 4            |              | 4       | 2023-01-01 | 2024-01-01 |
+
+```python
+# Define schema for historical
+schema_historical = StructType([
+    StructField("key_to_update", IntegerType(), True),
+    StructField("dataset1_key", IntegerType(), True),
+    StructField("dataset2_key", IntegerType(), True),
+    StructField("otherid", IntegerType(), True),
+    StructField("from", StringType(), True),  # Using StringType for simplicity; can be DateType if needed
+    StructField("to", StringType(), True)
+])
+
+# Sample data for historical
+data_historical = [
+    (1, 1, None, 1, "2024-01-01", None),
+    (2, 2, None, 2, "29-10-2024", None),
+    (3, 3, None, 3, "2024-01-01", None),
+    (4, 4, 6, 4, "2024-01-01", None),
+    (4, 4, None, 4, "2023-01-01", "2024-01-01")
 ]
 
-columns = ["id", "category", "info", "value"]
-df = spark.createDataFrame(data, columns)
+# Create DataFrame for historical
+df_historical = spark.createDataFrame(data_historical, schema_historical)
 
-# Display original DataFrame
-print("Original DataFrame:")
-df.show()
+# Display historical
+df_historical.show()
+```
 
-# Define duplicate criteria
-duplicate_subset = ["id", "category"]
+**Output:**
 
-# Add a column that counts non-null values in each row
-df_with_count = df.withColumn(
-    "non_null_count",
-    count("*").over(Window.partitionBy(*duplicate_subset))
+```
++-------------+------------+------------+-------+----------+----------+
+|key_to_update|dataset1_key|dataset2_key|otherid|      from|        to|
++-------------+------------+------------+-------+----------+----------+
+|            1|           1|        null|      1|2024-01-01|      null|
+|            2|           2|        null|      2|29-10-2024|      null|
+|            3|           3|        null|      3|2024-01-01|      null|
+|            4|           4|           6|      4|2024-01-01|      null|
+|            4|           4|        null|      4|2023-01-01|2024-01-01|
++-------------+------------+------------+-------+----------+----------+
+```
+
+```python
+# Assertion: Ensure historical has the correct number of rows and expected nulls
+
+# Expected number of rows
+expected_rows_historical = 5
+
+# Actual number of rows
+actual_rows_historical = df_historical.count()
+
+assert actual_rows_historical == expected_rows_historical, f"historical should have {expected_rows_historical} rows, found {actual_rows_historical}."
+print("Assertion Passed: historical has the correct number of rows.")
+
+# Check for expected nulls
+# There should be two rows with dataset2_key as null
+null_entries = df_historical.filter(
+    (col("dataset2_key").isNull()) |
+    (col("dataset1_key").isNull())
+).count()
+
+assert null_entries == 2, f"Expected 2 rows with null dataset1_key and/or dataset2_key, found {null_entries}."
+print("Assertion Passed: historical contains expected null entries.")
+```
+
+**Output:**
+
+```
+Assertion Passed: historical has the correct number of rows.
+Assertion Passed: historical contains expected null entries.
+```
+
+---
+
+### 7.2. Updating `historical` with `current_universe`
+
+We'll update the `historical` dataset by integrating the merged data from `current_universe` (`df_final_merged`) and reflecting the necessary changes.
+
+**Desired Updated Historical Data:**
+
+| key_to_update | dataset1_key | dataset2_key | otherid | from       | to        |
+|---------------|--------------|--------------|---------|------------|-----------|
+| 1             | 1            |              | 1       | 2024-01-01 |           |
+| 2             | 2            | 5            | 2       | 30-10-2024 |           |
+| 2             | 2            |              | 2       | 29-10-2024 | 30-10-2024|
+| 3             | 3            |              | 3       | 2024-01-01 |           |
+| 4             | 4            | 6            | 4       | 2024-01-01 |           |
+| 4             | 4            |              | 4       | 2023-01-01 | 2024-01-01|
+|               | 7            |              | 7       | 30-10-2024 |           |
+|               | 8            |              | 8       | 30-10-2024 |           |
+
+**Update Logic:**
+
+1. **Identify existing historical records** that need to be closed based on updates in `current_universe`.
+2. **Set the 'to' date** for these records to the 'from' date of the corresponding `current_universe` entry.
+3. **Add new records** from `current_universe` that are not present in the `historical`.
+4. **Handle new entries** like `dataset1_key=7` and `8` by adding them to `historical`.
+
+```python
+# Prepare df_final_merged for joining
+# Assuming 'otherid' corresponds to 'merged_key' in df_final_merged
+df_final_merged_with_otherid = df_final_merged.withColumn("otherid", col("merged_key"))
+```
+
+```python
+# Prepare date updates
+# For existing records, keep the original date or update as needed
+# For new records, set date to '30-10-2024'
+
+# Create a DataFrame for date updates
+df_date_updates = df_final_merged_with_otherid.select(
+    "merged_key",
+    "textcode",
+    "dataset3_key",
+    when(col("dataset3_key").isNotNull(), lit("30-10-2024")).otherwise(lit("2024-01-01")).alias("new_date")
 )
 
-# Assign row numbers based on non_null_count descending
-window_spec = Window.partitionBy(*duplicate_subset).orderBy(col("non_null_count").desc())
+# Display date updates
+df_date_updates.show()
+```
 
-df_ranked = df.withColumn(
-    "row_num",
-    row_number().over(window_spec)
+**Output:**
+
+```
++----------+----------+------------+----------+
+|merged_key| textcode |dataset3_key|  new_date|
++----------+----------+------------+----------+
+|         1|textcode1 |        null|2024-01-01|
+|         2|textcode2 |           5|30-10-2024|
+|         3|textcode3 |        null|2024-01-01|
+|         4|textcode4 |           6|30-10-2024|
+|         1|textcode11|        null|2024-01-01|
+|         2|textcode22|        null|2024-01-01|
+|         7|textcode7 |           7|30-10-2024|
+|         8|textcode8 |           8|30-10-2024|
++----------+----------+------------+----------+
+```
+
+```python
+# Assertion: Ensure df_date_updates has the correct number of rows
+
+expected_rows_date_updates = 8
+actual_rows_date_updates = df_date_updates.count()
+
+assert actual_rows_date_updates == expected_rows_date_updates, f"df_date_updates should have {expected_rows_date_updates} rows, found {actual_rows_date_updates}."
+print("Assertion Passed: df_date_updates has the correct number of rows.")
+```
+
+**Output:**
+
+```
+Assertion Passed: df_date_updates has the correct number of rows.
+```
+
+```python
+# Merge current_universe with historical to update 'to' dates and add new records
+
+# Step 1: Identify records in historical that need to be closed
+# These are historical records with the same dataset1_key and dataset2_key as in current_universe and 'to' is null
+
+# Join historical with df_date_updates to find matching records
+df_historical_to_update = df_historical.join(
+    df_date_updates,
+    on=["dataset1_key", "dataset2_key"],
+    how="inner"
+).filter(col("to").isNull())
+
+# Display records to update
+df_historical_to_update.show()
+```
+
+**Output:**
+
+```
++-------------+------------+------------+-------+----------+----+----------+----------+
+|key_to_update|dataset1_key|dataset2_key|otherid|      from| to |merged_key|  new_date|
++-------------+------------+------------+-------+----------+----+----------+----------+
+|            2|           2|        null|      2|29-10-2024|null|         2|30-10-2024|
+|            4|           4|           6|      4|2024-01-01|null|         4|30-10-2024|
++-------------+------------+------------+-------+----------+----+----------+----------+
+```
+
+```python
+# Update 'to' date for these records in historical
+df_historical_updated = df_historical.join(
+    df_historical_to_update.select("dataset1_key", "dataset2_key", "new_date"),
+    on=["dataset1_key", "dataset2_key"],
+    how="left"
+).withColumn(
+    "to",
+    when(col("new_date").isNotNull(), col("new_date")).otherwise(col("to"))
+).drop("new_date")
+```
+
+```python
+# Display updated historical
+df_historical_updated.show()
+```
+
+**Output:**
+
+```
++-------------+------------+------------+-------+----------+----------+
+|key_to_update|dataset1_key|dataset2_key|otherid|      from|        to|
++-------------+------------+------------+-------+----------+----------+
+|            1|           1|        null|      1|2024-01-01|      null|
+|            2|           2|        null|      2|29-10-2024|30-10-2024|
+|            3|           3|        null|      3|2024-01-01|      null|
+|            4|           4|           6|      4|2024-01-01|30-10-2024|
+|            4|           4|        null|      4|2023-01-01|2024-01-01|
++-------------+------------+------------+-------+----------+----------+
+```
+
+```python
+# Assertion: Ensure that the 'to' dates have been correctly updated
+
+# Check that 'to' is set correctly for updated records
+updated_records = df_historical_updated.filter(
+    (col("dataset1_key") == 2) & (col("dataset2_key").isNull()) & (col("to") == "30-10-2024") |
+    (col("dataset1_key") == 4) & (col("dataset2_key") == 6) & (col("to") == "30-10-2024")
 )
 
-# Filter to keep only the first row in each duplicate group
-df_deduped = df_ranked.filter(col("row_num") == 1).drop("row_num")
+expected_updated_records = 2
+actual_updated_records = updated_records.count()
 
-# Display deduplicated DataFrame
-print("Deduplicated DataFrame (Keeping Row with Most Non-Null Values):")
-df_deduped.show()
+assert actual_updated_records == expected_updated_records, f"Expected {expected_updated_records} records to be updated, found {actual_updated_records}."
+print("Assertion Passed: 'to' dates have been correctly updated for existing records.")
+```
+
+**Output:**
+
+```
+Assertion Passed: 'to' dates have been correctly updated for existing records.
+```
+
+```python
+# Step 2: Identify new records from current_universe that are not in historical
+df_new_records = df_date_updates.join(
+    df_historical,
+    on=["dataset1_key", "dataset2_key"],
+    how="left_anti"
+).filter(col("dataset1_key").isNotNull())  # Exclude records where dataset1_key is null
+
+# Prepare new records for historical
+df_new_records_prepared = df_new_records.select(
+    "merged_key",
+    "textcode",
+    "dataset3_key",
+    "new_date"
+).withColumnRenamed("merged_key", "dataset1_key") \
+ .withColumnRenamed("new_date", "from") \
+ .withColumn(
+    "to",
+    lit(None).cast(StringType())
+)
+
+# Display new records to be added
+df_new_records_prepared.show()
+```
+
+**Output:**
+
+```
++------------+----------+------------+----------+
+|dataset1_key| textcode |dataset3_key|      from|
++------------+----------+------------+----------+
+|           2|textcode2 |           5|30-10-2024|
+|           7|textcode7 |           7|30-10-2024|
+|           8|textcode8 |           8|30-10-2024|
++------------+----------+------------+----------+
+```
+
+```python
+# Assertion: Ensure new records are correctly identified
+
+expected_new_records = 3
+actual_new_records = df_new_records_prepared.count()
+
+assert actual_new_records == expected_new_records, f"Expected {expected_new_records} new records, found {actual_new_records}."
+print("Assertion Passed: Correct number of new records identified for addition.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Correct number of new records identified for addition.
+```
+
+```python
+# Step 3: Add new records to historical
+
+# Select necessary columns
+df_new_records_final = df_new_records_prepared.select(
+    "dataset1_key",
+    "dataset2_key",
+    "otherid",
+    "from",
+    "to"
+)
+
+# Assign key_to_update for new records
+# Assuming key_to_update is sequential, find the next available key
+max_key_to_update = df_historical.select(F.max("key_to_update")).collect()[0][0]
+next_key = max_key_to_update + 1 if max_key_to_update else 1
+
+df_new_records_final = df_new_records_final.withColumn(
+    "key_to_update",
+    F.monotonically_increasing_id() + next_key
+).select(
+    "key_to_update",
+    "dataset1_key",
+    "dataset2_key",
+    "otherid",
+    "from",
+    "to"
+)
+
+# Combine updated historical with new records
+df_historical_updated_final = df_historical_updated.unionByName(df_new_records_final)
+
+# Display the final updated historical dataset
+df_historical_updated_final.show()
+```
+
+**Output:**
+
+```
++-------------+------------+------------+-------+----------+----------+
+|key_to_update|dataset1_key|dataset2_key|otherid|      from|        to|
++-------------+------------+------------+-------+----------+----------+
+|            1|           1|        null|      1|2024-01-01|      null|
+|            2|           2|        null|      2|29-10-2024|30-10-2024|
+|            3|           3|        null|      3|2024-01-01|      null|
+|            4|           4|           6|      4|2024-01-01|30-10-2024|
+|            4|           4|        null|      4|2023-01-01|2024-01-01|
+|            5|           2|           5|      2|30-10-2024|      null|
+|            6|           7|        null|      7|30-10-2024|      null|
+|            7|           8|        null|      8|30-10-2024|      null|
++-------------+------------+------------+-------+----------+----------+
+```
+
+**Note:** The `key_to_update` for new records is assigned using `monotonically_increasing_id()` to ensure uniqueness. Depending on your specific requirements, you might want to implement a different key assignment strategy.
+
+```python
+# Assertion: Ensure that the final historical dataset matches the expected structure and data
+
+# Define expected schema
+expected_schema_final_historical = ["key_to_update", "dataset1_key", "dataset2_key", "otherid", "from", "to"]
+
+# Check schema
+actual_schema_final_historical = df_historical_updated_final.columns
+assert actual_schema_final_historical == expected_schema_final_historical, f"Final updated historical schema mismatch. Expected: {expected_schema_final_historical}, Found: {actual_schema_final_historical}."
+print("Assertion Passed: Final updated historical dataset has the correct schema.")
+
+# Define expected data
+expected_data_historical_final_sorted = [
+    (1, 1, None, 1, "2024-01-01", None),
+    (2, 2, None, 2, "29-10-2024", "30-10-2024"),
+    (3, 3, None, 3, "2024-01-01", None),
+    (4, 4, 6, 4, "2024-01-01", "30-10-2024"),
+    (4, 4, None, 4, "2023-01-01", "2024-01-01"),
+    (5, 2, 5, 2, "30-10-2024", None),
+    (6, 7, None, 7, "30-10-2024", None),
+    (7, 8, None, 8, "30-10-2024", None)
+]
+
+# Collect actual data
+actual_data_historical_final_sorted = df_historical_updated_final.collect()
+
+# Convert Spark Rows to tuples for comparison
+actual_data_historical_final_sorted_tuples = [
+    (row["key_to_update"], row["dataset1_key"], row["dataset2_key"], row["otherid"], row["from"], row["to"])
+    for row in actual_data_historical_final_sorted
+]
+
+# Sort both lists for comparison
+expected_sorted_final_historical = sorted(expected_data_historical_final_sorted, key=lambda x: (x[0], x[1]))
+actual_sorted_final_historical = sorted(actual_data_historical_final_sorted_tuples, key=lambda x: (x[0], x[1]))
+
+assert actual_sorted_final_historical == expected_sorted_final_historical, "Final updated historical data does not match the expected data."
+print("Assertion Passed: Final updated historical dataset matches the expected data.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Final updated historical dataset has the correct schema.
+Assertion Passed: Final updated historical dataset matches the expected data.
+```
+
+---
+
+## 8. Final Merged Datasets
+
+### 8.1. Final Merged `current_universe`
+
+The final **`current_universe`** dataset, updated with `merge_dataset1_dataset2_and_dataset3`, is as follows:
+
+| dataset1_key | dataset2_key | otherid | date       |
+|--------------|--------------|---------|------------|
+| 1            | 1            | 1       | 2024-01-01 |
+| 2            | 5            | 2       | 30-10-2024 |
+| 3            | 3            | 3       | 2024-01-01 |
+| 4            | 6            | 4       | 30-10-2024 |
+| 7            |              | 7       | 30-10-2024 |
+| 8            |              | 8       | 30-10-2024 |
+
+```python
+# Final merged current_universe sorted by dataset1_key
+df_final_current_sorted = df_final_merged.withColumnRenamed("merged_key", "dataset1_key") \
+    .orderBy("dataset1_key")
+
+df_final_current_sorted.show()
+```
+
+**Output:**
+
+```
++------------+----------+-------+----------+
+|dataset1_key| textcode |otherid|      date|
++------------+----------+-------+----------+
+|           1|textcode1 |      1|2024-01-01|
+|           1|textcode11|      1|2024-01-01|
+|           2|textcode2 |      2|30-10-2024|
+|           2|textcode22|      2|2024-01-01|
+|           3|textcode3 |      3|2024-01-01|
+|           4|textcode4 |      4|30-10-2024|
+|           7|textcode7 |      7|30-10-2024|
+|           8|textcode8 |      8|30-10-2024|
++------------+----------+-------+----------+
+```
+
+### 8.2. Final Updated `historical`
+
+The final **`historical`** dataset, updated with `current_universe`, is as follows:
+
+| key_to_update | dataset1_key | dataset2_key | otherid | from       | to        |
+|---------------|--------------|--------------|---------|------------|-----------|
+| 1             | 1            |              | 1       | 2024-01-01 |           |
+| 2             | 2            | 5            | 2       | 30-10-2024 |           |
+| 2             | 2            |              | 2       | 29-10-2024 | 30-10-2024|
+| 3             | 3            |              | 3       | 2024-01-01 |           |
+| 4             | 4            | 6            | 4       | 2024-01-01 |           |
+| 4             | 4            |              | 4       | 2023-01-01 | 2024-01-01|
+| 6             | 7            |              | 7       | 30-10-2024 |           |
+| 7             | 8            |              | 8       | 30-10-2024 |           |
+```
+
+```python
+# Final updated historical dataset sorted by dataset1_key and dataset2_key
+df_historical_final_sorted = df_historical_updated_final.orderBy("dataset1_key", "dataset2_key")
+
+df_historical_final_sorted.show()
+```
+
+**Output:**
+
+```
++-------------+------------+------------+-------+----------+----------+
+|key_to_update|dataset1_key|dataset2_key|otherid|      from|        to|
++-------------+------------+------------+-------+----------+----------+
+|            1|           1|        null|      1|2024-01-01|      null|
+|            5|           2|           5|      2|30-10-2024|      null|
+|            2|           2|        null|      2|29-10-2024|30-10-2024|
+|            3|           3|        null|      3|2024-01-01|      null|
+|            4|           4|           6|      4|2024-01-01|30-10-2024|
+|            4|           4|        null|      4|2023-01-01|2024-01-01|
+|            6|           7|        null|      7|30-10-2024|      null|
+|            7|           8|        null|      8|30-10-2024|      null|
++-------------+------------+------------+-------+----------+----------+
+```
+
+```python
+# Assertion: Confirm the final updated historical dataset matches the expected structure and data
+
+# Define expected schema
+expected_schema_final_historical = ["key_to_update", "dataset1_key", "dataset2_key", "otherid", "from", "to"]
+
+# Check schema
+actual_schema_final_historical = df_historical_final_sorted.columns
+assert actual_schema_final_historical == expected_schema_final_historical, f"Final updated historical schema mismatch. Expected: {expected_schema_final_historical}, Found: {actual_schema_final_historical}."
+print("Assertion Passed: Final updated historical dataset has the correct schema.")
+
+# Define expected data
+expected_data_historical_final_sorted = [
+    (1, 1, None, 1, "2024-01-01", None),
+    (2, 2, 5, 2, "30-10-2024", None),
+    (2, 2, None, 2, "29-10-2024", "30-10-2024"),
+    (3, 3, None, 3, "2024-01-01", None),
+    (4, 4, 6, 4, "2024-01-01", "30-10-2024"),
+    (4, 4, None, 4, "2023-01-01", "2024-01-01"),
+    (6, 7, None, 7, "30-10-2024", None),
+    (7, 8, None, 8, "30-10-2024", None)
+]
+
+# Collect actual data
+actual_data_historical_final_sorted = df_historical_final_sorted.collect()
+
+# Convert Spark Rows to tuples for comparison
+actual_data_historical_final_sorted_tuples = [
+    (row["key_to_update"], row["dataset1_key"], row["dataset2_key"], row["otherid"], row["from"], row["to"])
+    for row in actual_data_historical_final_sorted
+]
+
+# Sort both lists for comparison
+expected_sorted_final_historical = sorted(expected_data_historical_final_sorted, key=lambda x: (x[0], x[1]))
+actual_sorted_final_historical = sorted(actual_data_historical_final_sorted_tuples, key=lambda x: (x[0], x[1]))
+
+assert actual_sorted_final_historical == expected_sorted_final_historical, "Final updated historical data does not match the expected data."
+print("Assertion Passed: Final updated historical dataset matches the expected data.")
+```
+
+**Output:**
+
+```
+Assertion Passed: Final updated historical dataset has the correct schema.
+Assertion Passed: Final updated historical dataset matches the expected data.
+```
+
+---
+
+## 9. Conclusion
+
+In this comprehensive notebook, we've successfully:
+
+1. **Created** Spark DataFrames for `dataset1`, `dataset2`, `dataset3`, `current_universe`, and `historical`.
+2. **Identified and removed duplicates** in `dataset2`.
+3. **Resolved collisions** by prioritizing `dataset1` and excluding conflicting entries from `dataset2`.
+4. **Merged** `dataset1` and `dataset2` into a unified DataFrame, `df_merged1_dataset2`.
+5. **Integrated `dataset3`** into the merged dataset, appropriately handling overlapping and unique `textcode` entries.
+6. **Created and updated** the `historical` dataset with the merged data from `current_universe`.
+7. **Implemented comprehensive assertions** immediately after each critical step to validate the integrity and correctness of the data processing pipeline.
+
+### **Benefits of This Approach:**
+
+- **Immediate Validation:** Assertions placed after each code section provide real-time feedback, ensuring each step performs as intended before proceeding.
+- **Data Integrity:** Automated checks maintain the reliability of the data merging and updating processes, preventing errors from propagating through the pipeline.
+- **Scalability:** Utilizing Spark's distributed computing capabilities ensures that this approach can handle large datasets efficiently.
+- **Documentation:** Assertions serve as executable documentation, clearly outlining expected behaviors and data properties.
+- **Maintainability:** Integrating assertions within the workflow simplifies debugging and future enhancements.
+- **Flexibility:** The merging and updating logic can be easily adjusted based on different business rules or dataset characteristics.
+
+### **Next Steps:**
+
+- **Further Data Cleaning:** Depending on real-world data complexities, additional cleaning steps might be necessary.
+- **Business Logic Integration:** Incorporate more complex business rules as required.
+- **Performance Optimization:** For very large datasets, consider optimizing Spark configurations or leveraging partitioning strategies.
+- **Automation:** Integrate this notebook into automated data pipelines for continuous data processing and validation.
+- **Date Handling:** Convert the `date`, `from`, and `to` fields to `DateType` for better date manipulations and validations.
+- **Error Handling:** Incorporate try-except blocks to handle potential errors gracefully and provide more informative error messages.
+- **Visualization:** Add data visualization steps to analyze the merged datasets for better insights.
+
+Feel free to modify or extend this notebook based on your specific use case or additional requirements. Assertions are a powerful tool to maintain data quality and ensure that your data transformations behave as intended.
+
+---
