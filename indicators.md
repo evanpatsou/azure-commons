@@ -1,26 +1,25 @@
-### 1. Environment Setup
+### 1. Environment Setup and Sample Data
+
+Here’s the Spark code to set up `dataset1`, `dataset2`, and `dataset3`, and perform the merge as described.
 
 ```python
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count
+from pyspark.sql.functions import col, when, count
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 
 # Initialize Spark Session
 spark = SparkSession.builder \
-    .appName("DatasetEnhancementExample") \
+    .appName("DatasetMergeExample") \
     .getOrCreate()
-```
 
----
-
-### 2. Creating Sample DataFrames
-
-#### 2.1. `dataset1`
-
-```python
-# Define schema for dataset1
+# Define schemas
 schema1 = StructType([
     StructField("dataset1_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
+
+schema3 = StructType([
+    StructField("dataset3_key", IntegerType(), True),
     StructField("textcode", StringType(), True)
 ])
 
@@ -29,149 +28,99 @@ data1 = [
     (1, "textcode1"),
     (2, "textcode2"),
     (3, "textcode3"),
-    (4, "textcode4")
-]
-
-# Create DataFrame for dataset1
-df_dataset1 = spark.createDataFrame(data1, schema1)
-
-# Display dataset1
-df_dataset1.show()
-```
-
-#### 2.2. `dataset2`
-
-```python
-# Define schema for dataset2
-schema2 = StructType([
-    StructField("dataset1_key", IntegerType(), True),
-    StructField("textcode", StringType(), True)
-])
-
-# Sample data for dataset2 with duplication and collision
-data2 = [
+    (4, "textcode4"),
     (1, "textcode11"),
-    (1, "textcode11"),  # Duplication
-    (2, "textcode2"),
-    (2, "textcode22"),
-    (3, "textcode2")    # Collision with dataset1_key 2 and textcode2
+    (2, "textcode22")
 ]
 
-# Create DataFrame for dataset2
-df_dataset2 = spark.createDataFrame(data2, schema2)
+# Sample data for dataset3
+data3 = [
+    (5, "textcode2"),
+    (6, "textcode4"),
+    (7, "textcode7"),
+    (8, "textcode8")
+]
 
-# Display dataset2
-df_dataset2.show()
+# Create DataFrames
+df_dataset1 = spark.createDataFrame(data1, schema1)
+df_dataset3 = spark.createDataFrame(data3, schema3)
+
+# Display dataset1 and dataset3
+df_dataset1.show()
+df_dataset3.show()
 ```
 
 ---
 
-### 3. Identify and Remove Duplications in `dataset2`
+### 2. Join `dataset1` with `dataset3` on `textcode`
+
+Perform an outer join on `textcode` to combine `dataset1` and `dataset3` based on overlapping `textcode` values.
 
 ```python
-# Remove duplicate rows from dataset2
-df_dataset2_no_duplicates = df_dataset2.dropDuplicates()
+# Outer join on textcode to combine dataset1 and dataset3
+df_combined = df_dataset1.join(df_dataset3, on="textcode", how="outer")
 
-# Assertion to ensure no duplicates
-duplicate_count = df_dataset2_no_duplicates.groupBy("dataset1_key", "textcode").count() \
-    .filter(col("count") > 1).count()
-assert duplicate_count == 0, "Duplicates still exist in dataset2_no_duplicates"
-print("Assertion Passed: No duplicates in dataset2_no_duplicates.")
+# Display combined dataset
+df_combined.show()
 ```
 
----
+### 3. Filter Rows to Keep the Most Complete Entries
 
-### 4. Identify and Remove Collisions
-
-- A collision exists when multiple `textcode` values map to the same `dataset1_key`. We will identify such keys in `dataset2` and remove these colliding rows.
+We will:
+1. **Identify complete rows** (those with both `dataset1_key` and `dataset3_key`).
+2. **Prioritize these complete rows** for each `textcode`.
+3. **Remove duplicate or redundant rows** where an entry with both keys exists for the same `textcode`.
 
 ```python
-# Identify keys with collisions
-colliding_keys = df_dataset2_no_duplicates.groupBy("dataset1_key") \
-    .agg(count("textcode").alias("textcode_count")) \
-    .filter(col("textcode_count") > 1) \
-    .select("dataset1_key")
+# Filter to keep the most complete rows, prioritizing rows with both dataset1_key and dataset3_key
+from pyspark.sql import functions as F
 
-# Exclude colliding keys from dataset2
-df_dataset2_no_collisions = df_dataset2_no_duplicates.join(
-    colliding_keys,
-    on="dataset1_key",
-    how="left_anti"
+df_most_complete = df_combined.withColumn(
+    "row_priority", 
+    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)  # Row is complete if it has both keys
+    .when(col("dataset1_key").isNotNull() | col("dataset3_key").isNotNull(), 2)  # Row has only one key, lower priority
 )
 
-# Assertion to ensure no collisions: each key should now have exactly one `textcode`
-collision_count = df_dataset2_no_collisions.groupBy("dataset1_key").agg(count("textcode").alias("textcode_count")) \
-    .filter(col("textcode_count") > 1).count()
-assert collision_count == 0, "Collisions still exist in dataset2_no_collisions"
-print("Assertion Passed: No collisions in dataset2_no_collisions.")
+# Use row_number to select the highest priority row for each textcode
+from pyspark.sql.window import Window
+
+window_spec = Window.partitionBy("textcode").orderBy("row_priority")
+df_most_complete = df_most_complete.withColumn("row_num", F.row_number().over(window_spec)) \
+    .filter(col("row_num") == 1) \
+    .drop("row_priority", "row_num")
+
+# Display the filtered dataset with only the most complete rows
+df_most_complete.show()
+```
+
+The above code keeps only the most complete rows for each `textcode` value by assigning priorities and filtering based on those priorities.
+
+---
+
+### 4. Create the Final `dataset1_dataset3` by Selecting Relevant Columns
+
+Now, we can select only the `dataset1_key` and `dataset3_key` columns to create the final merged dataset, `dataset1_dataset3`.
+
+```python
+# Select the desired columns to form the final dataset
+df_dataset1_dataset3 = df_most_complete.select("dataset1_key", "dataset3_key").distinct()
+
+# Display the final dataset1_dataset3
+df_dataset1_dataset3.show()
 ```
 
 ---
 
-### 5. Merge `dataset1` with the Cleaned `dataset2` to Create `enchanced_dataset1`
+### Expected Output for `dataset1_dataset3`
 
-After cleaning duplications and collisions, we can merge `dataset1` with `dataset2_no_collisions`.
+The final result should look like:
 
-```python
-# Perform union to merge dataset1 and cleaned dataset2
-df_enhanced_dataset1 = df_dataset1.unionByName(df_dataset2_no_collisions)
+| dataset1_key | dataset3_key |
+|--------------|--------------|
+| 1            |              |
+| 2            | 5            |
+| 3            |              |
+| 4            | 6            |
+| 7            |              |
+| 8            |              |
 
-# Display the enhanced dataset
-df_enhanced_dataset1.show()
-```
-
----
-
-### 6. Assertions to Verify the Final Dataset (`enchanced_dataset1`)
-
-#### 6.1. Ensure All Original Rows in `dataset1` are Present in `enchanced_dataset1`
-
-```python
-# Check that all rows from dataset1 are in enhanced_dataset1
-dataset1_count = df_dataset1.count()
-in_enhanced_count = df_enhanced_dataset1.join(df_dataset1, on=["dataset1_key", "textcode"], how="inner").count()
-assert dataset1_count == in_enhanced_count, "Not all dataset1 rows are present in enhanced_dataset1"
-print("Assertion Passed: All original rows from dataset1 are present in enhanced_dataset1.")
-```
-
-#### 6.2. Ensure No Duplicates in `enchanced_dataset1`
-
-```python
-# Check for duplicates in enhanced_dataset1
-enhanced_duplicates_count = df_enhanced_dataset1.groupBy("dataset1_key", "textcode").count() \
-    .filter(col("count") > 1).count()
-assert enhanced_duplicates_count == 0, "Duplicates found in enhanced_dataset1"
-print("Assertion Passed: No duplicates in enhanced_dataset1.")
-```
-
-#### 6.3. Ensure No Collisions in `enchanced_dataset1`
-
-Each `dataset1_key` should map to only one `textcode`.
-
-```python
-# Check for collisions in enhanced_dataset1
-enhanced_collision_count = df_enhanced_dataset1.groupBy("dataset1_key").agg(count("textcode").alias("textcode_count")) \
-    .filter(col("textcode_count") > 1).count()
-assert enhanced_collision_count == 0, "Collisions found in enhanced_dataset1"
-print("Assertion Passed: No collisions in enhanced_dataset1.")
-```
-
----
-
-### Final Output of `enchanced_dataset1`
-
-```python
-# Show final enhanced dataset1
-df_enhanced_dataset1.show()
-```
-
-### Expected Result for `enchanced_dataset1`
-
-| dataset1_key | textcode  |
-|--------------|-----------|
-| 1            | textcode1 |
-| 2            | textcode2 |
-| 3            | textcode3 |
-| 4            | textcode4 |
-| 1            | textcode11|
-| 2            | textcode22|
