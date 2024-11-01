@@ -50,53 +50,44 @@ df_combined = df_combined.withColumn(
     (col("dataset1_key").isNotNull().cast("integer") + col("dataset3_key").isNotNull().cast("integer"))
 )
 
-# Define window specification with enhanced ordering
+# Define window specification for dataset1_key
 from pyspark.sql.window import Window
 import pyspark.sql.functions as F
 
-window_spec = Window.partitionBy("textcode").orderBy(
+window_spec1 = Window.partitionBy("dataset1_key").orderBy(
     col("non_null_keys").desc(),
-    col("dataset1_key").asc_nulls_last(),
-    col("dataset3_key").asc_nulls_last()
+    col("dataset3_key").asc_nulls_last(),
+    col("textcode").asc()
 )
 
-# Use row_number to select the top row for each textcode
-df_most_complete = df_combined.withColumn("row_num", F.row_number().over(window_spec)) \
-    .filter(col("row_num") == 1) \
-    .drop("non_null_keys", "row_num")
+# Apply row_number over dataset1_key
+df_combined = df_combined.withColumn(
+    "row_num1",
+    F.row_number().over(window_spec1)
+)
+
+# Define window specification for dataset3_key
+window_spec2 = Window.partitionBy("dataset3_key").orderBy(
+    col("non_null_keys").desc(),
+    col("dataset1_key").asc_nulls_last(),
+    col("textcode").asc()
+)
+
+# Apply row_number over dataset3_key
+df_combined = df_combined.withColumn(
+    "row_num2",
+    F.row_number().over(window_spec2)
+)
+
+# Filter to keep only the most complete rows per key
+df_filtered = df_combined.filter(
+    ((col("dataset1_key").isNotNull()) & (col("row_num1") == 1)) |
+    ((col("dataset3_key").isNotNull()) & (col("row_num2") == 1))
+).drop("non_null_keys", "row_num1", "row_num2")
 
 # Select the desired columns to form the final dataset
-df_dataset1_dataset3 = df_most_complete.select("dataset1_key", "dataset3_key").distinct()
+df_dataset1_dataset3 = df_filtered.select("dataset1_key", "dataset3_key").distinct()
 
 # Display the final dataset1_dataset3
 df_dataset1_dataset3.show()
-```
-
-### **Explanation of Corrections**
-
-1. **Calculating `non_null_keys`:**
-   - We add a new column `non_null_keys` that counts how many keys are non-null in each row. This helps in determining the completeness of each row.
-
-2. **Enhanced Window Specification:**
-   - The window specification now orders by `non_null_keys` in descending order to prioritize rows with more keys.
-   - It also orders by `dataset1_key` and `dataset3_key` in ascending order to break ties consistently.
-
-3. **Filtering to Keep Only the Top Row per `textcode`:**
-   - By using `row_number()` over the enhanced window, we ensure that only the most complete and consistently chosen row per `textcode` is retained.
-
-### **Expected Output for `dataset1_dataset3`**
-
-After applying the corrected code, the final output should be:
-
-```
-+------------+------------+
-|dataset1_key|dataset3_key|
-+------------+------------+
-|           1|        null|
-|           2|           5|
-|           3|        null|
-|           4|           6|
-|        null|           7|
-|        null|           8|
-+------------+------------+
 ```
