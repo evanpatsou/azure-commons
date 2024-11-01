@@ -4,7 +4,7 @@
 
 ```python
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, count
+from pyspark.sql.functions import col, when
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -77,7 +77,7 @@ df_dataset3.show()
 ```
 
 ### Expected Output:
-`dataset1` and `dataset3` should display as described in the tables above.
+The tables displayed should match `dataset1` and `dataset3` as defined above.
 
 ---
 
@@ -93,6 +93,8 @@ df_combined.show()
 ```
 
 ### Expected Output:
+The combined dataset should include all `textcode` values, along with `dataset1_key` and `dataset3_key` where available:
+
 | textcode  | dataset1_key | dataset3_key |
 |-----------|--------------|--------------|
 | textcode1 | 1            | null         |
@@ -108,19 +110,22 @@ df_combined.show()
 
 ## **3. Filter to Keep the Most Complete Rows**
 
-### Action: Retain Rows with Both `dataset1_key` and `dataset3_key` When Available
+### Action: Assign Row Priority and Retain Only the Most Complete Rows for Each `textcode`
+
+- Rows with both `dataset1_key` and `dataset3_key` should have higher priority.
+- Less complete rows will be filtered out automatically by prioritizing rows with both keys present.
 
 ```python
-# Add a row priority column to prioritize rows with both dataset1_key and dataset3_key
-df_most_complete = df_combined.withColumn(
+# Step 1: Assign priority based on the completeness of each row
+df_prioritized = df_combined.withColumn(
     "row_priority", 
-    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)
-    .when(col("dataset1_key").isNotNull() | col("dataset3_key").isNotNull(), 2)
+    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)  # Both keys are present
+    .otherwise(2)  # Only one key is present
 )
 
-# Apply row_number over each textcode partition to keep only the most complete row
+# Step 2: Use a window function to retain only the most complete (highest priority) row for each textcode
 window_spec = Window.partitionBy("textcode").orderBy("row_priority")
-df_most_complete = df_most_complete.withColumn("row_num", F.row_number().over(window_spec)) \
+df_most_complete = df_prioritized.withColumn("row_num", F.row_number().over(window_spec)) \
     .filter(col("row_num") == 1) \
     .drop("row_priority", "row_num")
 
@@ -128,10 +133,9 @@ print("Filtered dataset (keeping only the most complete rows):")
 df_most_complete.show()
 ```
 
-### Assertion:
-The filtered dataset should contain no duplicate `textcode` values, and each retained row should have either both `dataset1_key` and `dataset3_key` or only one of them where both aren’t available.
-
 ### Expected Output:
+This step should filter out redundant rows, leaving only one row per `textcode`, with priority given to rows containing both `dataset1_key` and `dataset3_key`.
+
 | textcode  | dataset1_key | dataset3_key |
 |-----------|--------------|--------------|
 | textcode1 | 1            | null         |
@@ -149,17 +153,20 @@ The filtered dataset should contain no duplicate `textcode` values, and each ret
 
 ### Action: Select Only `dataset1_key` and `dataset3_key` Columns
 
+After filtering, select only the key columns to form the final output.
+
 ```python
-# Select the desired columns to form the final dataset
+# Select only dataset1_key and dataset3_key columns to form the final dataset
 df_dataset1_dataset3 = df_most_complete.select("dataset1_key", "dataset3_key").distinct()
-print("Final dataset1_dataset3:")
+
+print("Final dataset1_dataset3 (dynamically filtered):")
 df_dataset1_dataset3.show()
 ```
 
-### Assertion:
-Each row in `dataset1_dataset3` should contain either `dataset1_key`, `dataset3_key`, or both, without duplication.
-
 ### Expected Output:
+
+The final `dataset1_dataset3` should retain only the unique and most complete rows, showing each unique `dataset1_key` or `dataset3_key` without duplicates.
+
 | dataset1_key | dataset3_key |
 |--------------|--------------|
 | 1            | null         |
@@ -168,5 +175,3 @@ Each row in `dataset1_dataset3` should contain either `dataset1_key`, `dataset3_
 | 4            | 6            |
 | null         | 7            |
 | null         | 8            |
-
----
