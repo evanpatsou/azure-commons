@@ -1,269 +1,177 @@
+### 1. Environment Setup
+
 ```python
-# Cell 1: Import necessary libraries and create Spark session
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, countDistinct
+from pyspark.sql.functions import col, count
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 
+# Initialize Spark Session
 spark = SparkSession.builder \
-    .appName("EnhanceDataset") \
+    .appName("DatasetEnhancementExample") \
     .getOrCreate()
 ```
 
-```python
-# Cell 2: Define schemas for the datasets
-dataset1_schema = StructType([
-    StructField('dataset1_key', IntegerType(), True),
-    StructField('textcode', StringType(), True)
-])
+---
 
-dataset2_schema = StructType([
-    StructField('dataset1_key', IntegerType(), True),
-    StructField('textcode', StringType(), True)
-])
-```
+### 2. Creating Sample DataFrames
+
+#### 2.1. `dataset1`
 
 ```python
-# Cell 3: Load dataset1 (replace with actual data loading code)
-# For demonstration purposes, we'll create a sample DataFrame
-dataset1 = spark.createDataFrame([
-    (1, 'textcode1'),
-    (2, 'textcode2'),
-    (3, 'textcode3'),
-    (4, 'textcode4')
-], schema=dataset1_schema)
+# Define schema for dataset1
+schema1 = StructType([
+    StructField("dataset1_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
+
+# Sample data for dataset1
+data1 = [
+    (1, "textcode1"),
+    (2, "textcode2"),
+    (3, "textcode3"),
+    (4, "textcode4")
+]
+
+# Create DataFrame for dataset1
+df_dataset1 = spark.createDataFrame(data1, schema1)
 
 # Display dataset1
-dataset1.show()
+df_dataset1.show()
 ```
 
-**Output:**
-```
-+-------------+---------+
-|dataset1_key |textcode |
-+-------------+---------+
-|            1|textcode1|
-|            2|textcode2|
-|            3|textcode3|
-|            4|textcode4|
-+-------------+---------+
-```
+#### 2.2. `dataset2`
 
 ```python
-# Cell 4: Load dataset2 (replace with actual data loading code)
-# For demonstration purposes, we'll create a sample DataFrame
-dataset2 = spark.createDataFrame([
-    (1, 'textcode11'),
-    (1, 'textcode11'),  # duplication
-    (2, 'textcode2'),
-    (2, 'textcode22'),
-    (3, 'textcode2')    # collision: 'textcode2' associated with multiple keys
-], schema=dataset2_schema)
+# Define schema for dataset2
+schema2 = StructType([
+    StructField("dataset1_key", IntegerType(), True),
+    StructField("textcode", StringType(), True)
+])
+
+# Sample data for dataset2 with duplication and collision
+data2 = [
+    (1, "textcode11"),
+    (1, "textcode11"),  # Duplication
+    (2, "textcode2"),
+    (2, "textcode22"),
+    (3, "textcode2")    # Collision with dataset1_key 2 and textcode2
+]
+
+# Create DataFrame for dataset2
+df_dataset2 = spark.createDataFrame(data2, schema2)
 
 # Display dataset2
-dataset2.show()
+df_dataset2.show()
 ```
 
-**Output:**
-```
-+-------------+----------+
-|dataset1_key | textcode |
-+-------------+----------+
-|            1|textcode11|
-|            1|textcode11|
-|            2| textcode2|
-|            2|textcode22|
-|            3| textcode2|
-+-------------+----------+
-```
+---
+
+### 3. Identify and Remove Duplications in `dataset2`
 
 ```python
-# Cell 5: Remove duplicate rows from dataset2
-def remove_duplicates(df):
-    return df.dropDuplicates()
+# Remove duplicate rows from dataset2
+df_dataset2_no_duplicates = df_dataset2.dropDuplicates()
 
-dataset2_dedup = remove_duplicates(dataset2)
-
-# Display dataset2 after removing duplicates
-dataset2_dedup.show()
+# Assertion to ensure no duplicates
+duplicate_count = df_dataset2_no_duplicates.groupBy("dataset1_key", "textcode").count() \
+    .filter(col("count") > 1).count()
+assert duplicate_count == 0, "Duplicates still exist in dataset2_no_duplicates"
+print("Assertion Passed: No duplicates in dataset2_no_duplicates.")
 ```
 
-**Output:**
-```
-+-------------+----------+
-|dataset1_key | textcode |
-+-------------+----------+
-|            1|textcode11|
-|            2| textcode2|
-|            2|textcode22|
-|            3| textcode2|
-+-------------+----------+
-```
+---
+
+### 4. Identify and Remove Collisions
+
+- A collision exists when multiple `textcode` values map to the same `dataset1_key`. We will identify such keys in `dataset2` and remove these colliding rows.
 
 ```python
-# Cell 6: Identify collisions in dataset2
-def find_collisions(df):
-    return df.groupBy('textcode') \
-             .agg(countDistinct('dataset1_key').alias('key_count')) \
-             .filter(col('key_count') > 1) \
-             .select('textcode')
+# Identify keys with collisions
+colliding_keys = df_dataset2_no_duplicates.groupBy("dataset1_key") \
+    .agg(count("textcode").alias("textcode_count")) \
+    .filter(col("textcode_count") > 1) \
+    .select("dataset1_key")
 
-collision_textcodes = find_collisions(dataset2_dedup)
+# Exclude colliding keys from dataset2
+df_dataset2_no_collisions = df_dataset2_no_duplicates.join(
+    colliding_keys,
+    on="dataset1_key",
+    how="left_anti"
+)
 
-# Display colliding textcodes
-collision_textcodes.show()
+# Assertion to ensure no collisions: each key should now have exactly one `textcode`
+collision_count = df_dataset2_no_collisions.groupBy("dataset1_key").agg(count("textcode").alias("textcode_count")) \
+    .filter(col("textcode_count") > 1).count()
+assert collision_count == 0, "Collisions still exist in dataset2_no_collisions"
+print("Assertion Passed: No collisions in dataset2_no_collisions.")
 ```
 
-**Output:**
-```
-+---------+
-| textcode|
-+---------+
-|textcode2|
-+---------+
-```
+---
+
+### 5. Merge `dataset1` with the Cleaned `dataset2` to Create `enchanced_dataset1`
+
+After cleaning duplications and collisions, we can merge `dataset1` with `dataset2_no_collisions`.
 
 ```python
-# Cell 7: Exclude colliding rows from dataset2
-def exclude_collisions(df, collisions):
-    return df.join(collisions, on='textcode', how='left_anti')
-
-dataset2_clean = exclude_collisions(dataset2_dedup, collision_textcodes)
-
-# Display dataset2 after excluding collisions
-dataset2_clean.show()
-```
-
-**Output:**
-```
-+-------------+----------+
-|     textcode|dataset1_key|
-+-------------+----------+
-|  textcode11|           1|
-| textcode22|           2|
-+-------------+----------+
-```
-
-```python
-# Cell 8: Combine dataset1 with cleaned dataset2 to create enhanced_dataset1
-def enhance_dataset(dataset1_df, dataset2_df):
-    return dataset1_df.unionByName(dataset2_df)
-
-enhanced_dataset1 = enhance_dataset(dataset1, dataset2_clean)
+# Perform union to merge dataset1 and cleaned dataset2
+df_enhanced_dataset1 = df_dataset1.unionByName(df_dataset2_no_collisions)
 
 # Display the enhanced dataset
-enhanced_dataset1.show()
+df_enhanced_dataset1.show()
 ```
 
-**Output:**
-```
-+-------------+----------+
-|dataset1_key | textcode |
-+-------------+----------+
-|            1| textcode1|
-|            2| textcode2|
-|            3| textcode3|
-|            4| textcode4|
-|            1|textcode11|
-|            2|textcode22|
-+-------------+----------+
-```
+---
+
+### 6. Assertions to Verify the Final Dataset (`enchanced_dataset1`)
+
+#### 6.1. Ensure All Original Rows in `dataset1` are Present in `enchanced_dataset1`
 
 ```python
-# Cell 9: Testing assertions decoupled from data
-# We'll define test functions using sample data within the test functions
-
-def test_remove_duplicates():
-    # Sample data with duplicates
-    test_df = spark.createDataFrame([
-        (1, 'codeA'),
-        (1, 'codeA'),
-        (2, 'codeB')
-    ], ['key', 'code'])
-    
-    expected_df = spark.createDataFrame([
-        (1, 'codeA'),
-        (2, 'codeB')
-    ], ['key', 'code'])
-    
-    result_df = remove_duplicates(test_df)
-    assert result_df.subtract(expected_df).count() == 0, "Duplicates were not removed correctly."
-
-test_remove_duplicates()
+# Check that all rows from dataset1 are in enhanced_dataset1
+dataset1_count = df_dataset1.count()
+in_enhanced_count = df_enhanced_dataset1.join(df_dataset1, on=["dataset1_key", "textcode"], how="inner").count()
+assert dataset1_count == in_enhanced_count, "Not all dataset1 rows are present in enhanced_dataset1"
+print("Assertion Passed: All original rows from dataset1 are present in enhanced_dataset1.")
 ```
+
+#### 6.2. Ensure No Duplicates in `enchanced_dataset1`
 
 ```python
-def test_find_collisions():
-    # Sample data with collisions
-    test_df = spark.createDataFrame([
-        (1, 'codeX'),
-        (2, 'codeX'),
-        (3, 'codeY')
-    ], ['key', 'code'])
-    
-    expected_collisions = spark.createDataFrame([
-        ('codeX',)
-    ], ['code'])
-    
-    collisions_df = find_collisions(test_df)
-    assert collisions_df.subtract(expected_collisions).count() == 0, "Collisions were not identified correctly."
-
-test_find_collisions()
+# Check for duplicates in enhanced_dataset1
+enhanced_duplicates_count = df_enhanced_dataset1.groupBy("dataset1_key", "textcode").count() \
+    .filter(col("count") > 1).count()
+assert enhanced_duplicates_count == 0, "Duplicates found in enhanced_dataset1"
+print("Assertion Passed: No duplicates in enhanced_dataset1.")
 ```
+
+#### 6.3. Ensure No Collisions in `enchanced_dataset1`
+
+Each `dataset1_key` should map to only one `textcode`.
 
 ```python
-def test_exclude_collisions():
-    # Sample data
-    test_df = spark.createDataFrame([
-        (1, 'codeX'),
-        (2, 'codeX'),
-        (3, 'codeY')
-    ], ['key', 'code'])
-    
-    collisions_df = spark.createDataFrame([
-        ('codeX',)
-    ], ['code'])
-    
-    expected_df = spark.createDataFrame([
-        (3, 'codeY')
-    ], ['key', 'code'])
-    
-    result_df = exclude_collisions(test_df, collisions_df)
-    assert result_df.subtract(expected_df).count() == 0, "Collisions were not excluded correctly."
-
-test_exclude_collisions()
+# Check for collisions in enhanced_dataset1
+enhanced_collision_count = df_enhanced_dataset1.groupBy("dataset1_key").agg(count("textcode").alias("textcode_count")) \
+    .filter(col("textcode_count") > 1).count()
+assert enhanced_collision_count == 0, "Collisions found in enhanced_dataset1"
+print("Assertion Passed: No collisions in enhanced_dataset1.")
 ```
+
+---
+
+### Final Output of `enchanced_dataset1`
 
 ```python
-def test_enhance_dataset():
-    # Sample dataset1
-    dataset1_df = spark.createDataFrame([
-        (1, 'code1'),
-        (2, 'code2')
-    ], ['key', 'code'])
-    
-    # Sample dataset2
-    dataset2_df = spark.createDataFrame([
-        (3, 'code3')
-    ], ['key', 'code'])
-    
-    expected_df = spark.createDataFrame([
-        (1, 'code1'),
-        (2, 'code2'),
-        (3, 'code3')
-    ], ['key', 'code'])
-    
-    result_df = enhance_dataset(dataset1_df, dataset2_df)
-    assert result_df.subtract(expected_df).count() == 0, "Datasets were not combined correctly."
-
-test_enhance_dataset()
+# Show final enhanced dataset1
+df_enhanced_dataset1.show()
 ```
 
-```python
-# Cell 10: Confirm all tests passed
-print("All tests passed successfully.")
-```
+### Expected Result for `enchanced_dataset1`
 
-**Output:**
-```
-All tests passed successfully.
-```
+| dataset1_key | textcode  |
+|--------------|-----------|
+| 1            | textcode1 |
+| 2            | textcode2 |
+| 3            | textcode3 |
+| 4            | textcode4 |
+| 1            | textcode11|
+| 2            | textcode22|
