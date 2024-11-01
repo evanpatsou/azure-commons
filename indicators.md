@@ -1,17 +1,43 @@
-### 1. Environment Setup and Sample Data
+## **1. Setup and Initial DataFrames**
 
-Here’s the Spark code to set up `dataset1`, `dataset2`, and `dataset3`, and perform the merge as described.
+### Action: Import Libraries and Initialize Spark Session
 
 ```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, count
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 # Initialize Spark Session
 spark = SparkSession.builder \
     .appName("DatasetMergeExample") \
     .getOrCreate()
+```
 
+### Action: Define Schemas and Create Sample DataFrames
+
+#### `dataset1`
+
+| dataset1_key | textcode  |
+|--------------|-----------|
+| 1            | textcode1 |
+| 2            | textcode2 |
+| 3            | textcode3 |
+| 4            | textcode4 |
+| 1            | textcode11 |
+| 2            | textcode22 |
+
+#### `dataset3`
+
+| dataset3_key | textcode  |
+|--------------|-----------|
+| 5            | textcode2 |
+| 6            | textcode4 |
+| 7            | textcode7 |
+| 8            | textcode8 |
+
+```python
 # Define schemas
 schema1 = StructType([
     StructField("dataset1_key", IntegerType(), True),
@@ -23,7 +49,7 @@ schema3 = StructType([
     StructField("textcode", StringType(), True)
 ])
 
-# Sample data for dataset1
+# Sample data for dataset1 and dataset3
 data1 = [
     (1, "textcode1"),
     (2, "textcode2"),
@@ -32,8 +58,6 @@ data1 = [
     (1, "textcode11"),
     (2, "textcode22")
 ]
-
-# Sample data for dataset3
 data3 = [
     (5, "textcode2"),
     (6, "textcode4"),
@@ -45,82 +69,104 @@ data3 = [
 df_dataset1 = spark.createDataFrame(data1, schema1)
 df_dataset3 = spark.createDataFrame(data3, schema3)
 
-# Display dataset1 and dataset3
+# Show initial DataFrames
+print("Initial dataset1:")
 df_dataset1.show()
+print("Initial dataset3:")
 df_dataset3.show()
 ```
 
+### Expected Output:
+`dataset1` and `dataset3` should display as described in the tables above.
+
 ---
 
-### 2. Join `dataset1` with `dataset3` on `textcode`
+## **2. Combine `dataset1` and `dataset3` by `textcode`**
 
-Perform an outer join on `textcode` to combine `dataset1` and `dataset3` based on overlapping `textcode` values.
+### Action: Perform Outer Join on `textcode`
 
 ```python
 # Outer join on textcode to combine dataset1 and dataset3
 df_combined = df_dataset1.join(df_dataset3, on="textcode", how="outer")
-
-# Display combined dataset
+print("Combined dataset (after outer join on textcode):")
 df_combined.show()
 ```
 
-### 3. Filter Rows to Keep the Most Complete Entries
+### Expected Output:
+| textcode  | dataset1_key | dataset3_key |
+|-----------|--------------|--------------|
+| textcode1 | 1            | null         |
+| textcode2 | 2            | 5            |
+| textcode3 | 3            | null         |
+| textcode4 | 4            | 6            |
+| textcode11| 1            | null         |
+| textcode22| 2            | null         |
+| textcode7 | null         | 7            |
+| textcode8 | null         | 8            |
 
-We will:
-1. **Identify complete rows** (those with both `dataset1_key` and `dataset3_key`).
-2. **Prioritize these complete rows** for each `textcode`.
-3. **Remove duplicate or redundant rows** where an entry with both keys exists for the same `textcode`.
+---
+
+## **3. Filter to Keep the Most Complete Rows**
+
+### Action: Retain Rows with Both `dataset1_key` and `dataset3_key` When Available
 
 ```python
-# Filter to keep the most complete rows, prioritizing rows with both dataset1_key and dataset3_key
-from pyspark.sql import functions as F
-
+# Add a row priority column to prioritize rows with both dataset1_key and dataset3_key
 df_most_complete = df_combined.withColumn(
     "row_priority", 
-    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)  # Row is complete if it has both keys
-    .when(col("dataset1_key").isNotNull() | col("dataset3_key").isNotNull(), 2)  # Row has only one key, lower priority
+    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)
+    .when(col("dataset1_key").isNotNull() | col("dataset3_key").isNotNull(), 2)
 )
 
-# Use row_number to select the highest priority row for each textcode
-from pyspark.sql.window import Window
-
+# Apply row_number over each textcode partition to keep only the most complete row
 window_spec = Window.partitionBy("textcode").orderBy("row_priority")
 df_most_complete = df_most_complete.withColumn("row_num", F.row_number().over(window_spec)) \
     .filter(col("row_num") == 1) \
     .drop("row_priority", "row_num")
 
-# Display the filtered dataset with only the most complete rows
+print("Filtered dataset (keeping only the most complete rows):")
 df_most_complete.show()
 ```
 
-The above code keeps only the most complete rows for each `textcode` value by assigning priorities and filtering based on those priorities.
+### Assertion:
+The filtered dataset should contain no duplicate `textcode` values, and each retained row should have either both `dataset1_key` and `dataset3_key` or only one of them where both aren’t available.
+
+### Expected Output:
+| textcode  | dataset1_key | dataset3_key |
+|-----------|--------------|--------------|
+| textcode1 | 1            | null         |
+| textcode2 | 2            | 5            |
+| textcode3 | 3            | null         |
+| textcode4 | 4            | 6            |
+| textcode11| 1            | null         |
+| textcode22| 2            | null         |
+| textcode7 | null         | 7            |
+| textcode8 | null         | 8            |
 
 ---
 
-### 4. Create the Final `dataset1_dataset3` by Selecting Relevant Columns
+## **4. Create Final `dataset1_dataset3` by Selecting Only the Keys**
 
-Now, we can select only the `dataset1_key` and `dataset3_key` columns to create the final merged dataset, `dataset1_dataset3`.
+### Action: Select Only `dataset1_key` and `dataset3_key` Columns
 
 ```python
 # Select the desired columns to form the final dataset
 df_dataset1_dataset3 = df_most_complete.select("dataset1_key", "dataset3_key").distinct()
-
-# Display the final dataset1_dataset3
+print("Final dataset1_dataset3:")
 df_dataset1_dataset3.show()
 ```
 
----
+### Assertion:
+Each row in `dataset1_dataset3` should contain either `dataset1_key`, `dataset3_key`, or both, without duplication.
 
-### Expected Output for `dataset1_dataset3`
-
-The final result should look like:
-
+### Expected Output:
 | dataset1_key | dataset3_key |
 |--------------|--------------|
-| 1            |              |
+| 1            | null         |
 | 2            | 5            |
-| 3            |              |
+| 3            | null         |
 | 4            | 6            |
-| 7            |              |
-| 8            |              |
+| null         | 7            |
+| null         | 8            |
 
+---
