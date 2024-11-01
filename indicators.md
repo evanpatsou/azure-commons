@@ -1,43 +1,13 @@
-## **1. Setup and Initial DataFrames**
-
-### Action: Import Libraries and Initialize Spark Session
-
 ```python
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when
+from pyspark.sql.functions import col, when, count, lit
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 
 # Initialize Spark Session
 spark = SparkSession.builder \
     .appName("DatasetMergeExample") \
     .getOrCreate()
-```
 
-### Action: Define Schemas and Create Sample DataFrames
-
-#### `dataset1`
-
-| dataset1_key | textcode  |
-|--------------|-----------|
-| 1            | textcode1 |
-| 2            | textcode2 |
-| 3            | textcode3 |
-| 4            | textcode4 |
-| 1            | textcode11 |
-| 2            | textcode22 |
-
-#### `dataset3`
-
-| dataset3_key | textcode  |
-|--------------|-----------|
-| 5            | textcode2 |
-| 6            | textcode4 |
-| 7            | textcode7 |
-| 8            | textcode8 |
-
-```python
 # Define schemas
 schema1 = StructType([
     StructField("dataset1_key", IntegerType(), True),
@@ -49,7 +19,7 @@ schema3 = StructType([
     StructField("textcode", StringType(), True)
 ])
 
-# Sample data for dataset1 and dataset3
+# Sample data for dataset1
 data1 = [
     (1, "textcode1"),
     (2, "textcode2"),
@@ -58,6 +28,8 @@ data1 = [
     (1, "textcode11"),
     (2, "textcode22")
 ]
+
+# Sample data for dataset3
 data3 = [
     (5, "textcode2"),
     (6, "textcode4"),
@@ -69,109 +41,62 @@ data3 = [
 df_dataset1 = spark.createDataFrame(data1, schema1)
 df_dataset3 = spark.createDataFrame(data3, schema3)
 
-# Show initial DataFrames
-print("Initial dataset1:")
-df_dataset1.show()
-print("Initial dataset3:")
-df_dataset3.show()
-```
-
-### Expected Output:
-The tables displayed should match `dataset1` and `dataset3` as defined above.
-
----
-
-## **2. Combine `dataset1` and `dataset3` by `textcode`**
-
-### Action: Perform Outer Join on `textcode`
-
-```python
 # Outer join on textcode to combine dataset1 and dataset3
 df_combined = df_dataset1.join(df_dataset3, on="textcode", how="outer")
-print("Combined dataset (after outer join on textcode):")
-df_combined.show()
-```
 
-### Expected Output:
-The combined dataset should include all `textcode` values, along with `dataset1_key` and `dataset3_key` where available:
-
-| textcode  | dataset1_key | dataset3_key |
-|-----------|--------------|--------------|
-| textcode1 | 1            | null         |
-| textcode2 | 2            | 5            |
-| textcode3 | 3            | null         |
-| textcode4 | 4            | 6            |
-| textcode11| 1            | null         |
-| textcode22| 2            | null         |
-| textcode7 | null         | 7            |
-| textcode8 | null         | 8            |
-
----
-
-## **3. Filter to Keep the Most Complete Rows**
-
-### Action: Assign Row Priority and Retain Only the Most Complete Rows for Each `textcode`
-
-- Rows with both `dataset1_key` and `dataset3_key` should have higher priority.
-- Less complete rows will be filtered out automatically by prioritizing rows with both keys present.
-
-```python
-# Step 1: Assign priority based on the completeness of each row
-df_prioritized = df_combined.withColumn(
-    "row_priority", 
-    when(col("dataset1_key").isNotNull() & col("dataset3_key").isNotNull(), 1)  # Both keys are present
-    .otherwise(2)  # Only one key is present
+# Calculate the number of non-null keys in each row
+df_combined = df_combined.withColumn(
+    "non_null_keys",
+    (col("dataset1_key").isNotNull().cast("integer") + col("dataset3_key").isNotNull().cast("integer"))
 )
 
-# Step 2: Use a window function to retain only the most complete (highest priority) row for each textcode
-window_spec = Window.partitionBy("textcode").orderBy("row_priority")
-df_most_complete = df_prioritized.withColumn("row_num", F.row_number().over(window_spec)) \
+# Define window specification with enhanced ordering
+from pyspark.sql.window import Window
+import pyspark.sql.functions as F
+
+window_spec = Window.partitionBy("textcode").orderBy(
+    col("non_null_keys").desc(),
+    col("dataset1_key").asc_nulls_last(),
+    col("dataset3_key").asc_nulls_last()
+)
+
+# Use row_number to select the top row for each textcode
+df_most_complete = df_combined.withColumn("row_num", F.row_number().over(window_spec)) \
     .filter(col("row_num") == 1) \
-    .drop("row_priority", "row_num")
+    .drop("non_null_keys", "row_num")
 
-print("Filtered dataset (keeping only the most complete rows):")
-df_most_complete.show()
-```
-
-### Expected Output:
-This step should filter out redundant rows, leaving only one row per `textcode`, with priority given to rows containing both `dataset1_key` and `dataset3_key`.
-
-| textcode  | dataset1_key | dataset3_key |
-|-----------|--------------|--------------|
-| textcode1 | 1            | null         |
-| textcode2 | 2            | 5            |
-| textcode3 | 3            | null         |
-| textcode4 | 4            | 6            |
-| textcode11| 1            | null         |
-| textcode22| 2            | null         |
-| textcode7 | null         | 7            |
-| textcode8 | null         | 8            |
-
----
-
-## **4. Create Final `dataset1_dataset3` by Selecting Only the Keys**
-
-### Action: Select Only `dataset1_key` and `dataset3_key` Columns
-
-After filtering, select only the key columns to form the final output.
-
-```python
-# Select only dataset1_key and dataset3_key columns to form the final dataset
+# Select the desired columns to form the final dataset
 df_dataset1_dataset3 = df_most_complete.select("dataset1_key", "dataset3_key").distinct()
 
-print("Final dataset1_dataset3 (dynamically filtered):")
+# Display the final dataset1_dataset3
 df_dataset1_dataset3.show()
 ```
 
-### Expected Output:
+### **Explanation of Corrections**
 
-The final `dataset1_dataset3` should retain only the unique and most complete rows, showing each unique `dataset1_key` or `dataset3_key` without duplicates.
+1. **Calculating `non_null_keys`:**
+   - We add a new column `non_null_keys` that counts how many keys are non-null in each row. This helps in determining the completeness of each row.
 
-| dataset1_key | dataset3_key |
-|--------------|--------------|
-| 1            | null         |
-| 2            | 5            |
-| 3            | null         |
-| 4            | 6            |
-| null         | 7            |
-| null         | 8            |
+2. **Enhanced Window Specification:**
+   - The window specification now orders by `non_null_keys` in descending order to prioritize rows with more keys.
+   - It also orders by `dataset1_key` and `dataset3_key` in ascending order to break ties consistently.
+
+3. **Filtering to Keep Only the Top Row per `textcode`:**
+   - By using `row_number()` over the enhanced window, we ensure that only the most complete and consistently chosen row per `textcode` is retained.
+
+### **Expected Output for `dataset1_dataset3`**
+
+After applying the corrected code, the final output should be:
+
+```
++------------+------------+
+|dataset1_key|dataset3_key|
++------------+------------+
+|           1|        null|
+|           2|           5|
+|           3|        null|
+|           4|           6|
+|        null|           7|
+|        null|           8|
++------------+------------+
+```
