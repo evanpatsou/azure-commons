@@ -1,121 +1,147 @@
 ```python
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, coalesce, first, when, lit
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DoubleType, TimestampType
-from pyspark.sql.window import Window
+from pyspark.sql.functions import col, when, lit, to_date, coalesce, max as spark_max, array, explode
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
+import pyspark.sql.functions as F
 
-spark = SparkSession.builder.appName("DataFrameConversion").getOrCreate()
+# Initialize Spark Session
+spark = SparkSession.builder.appName("PandasToSparkFlexible").getOrCreate()
 
-# Sample data for universe
-data_universe = [
-    (1, 'textcode1', None),
-    (2, 'textcode2', 5.0),
-    (3, 'textcode3', None),
-    (4, 'textcode4', 6.0),
-    (7, 'textcode7', None),
-    (8, 'textcode8', None)
-]
+# 1. Set Up Sample DataFrames
 
-schema_universe = StructType([
+# Schema for historical
+schema_historical = StructType([
+    StructField("otherkey", IntegerType(), True),
     StructField("dataset1_key", IntegerType(), True),
-    StructField("textcode", StringType(), True),
-    StructField("dataset3_key", DoubleType(), True)
-])
-
-df_universe = spark.createDataFrame(data_universe, schema_universe)
-
-# Sample data for current_df
-data_current = [
-    (1, None, 'otherid1', '2024-01-01'),
-    (2, None, 'otherid2', '2024-01-01'),
-    (3, None, 'otherid3', '2024-01-01'),
-    (None, 6.0, 'otherid4', '2024-01-01')
-]
-
-schema_current = StructType([
-    StructField("dataset1_key", IntegerType(), True),
-    StructField("dataset3_key", DoubleType(), True),
+    StructField("dataset3_key", IntegerType(), True),
     StructField("otherid", StringType(), True),
-    StructField("date", StringType(), True)
+    StructField("from", DateType(), True),
+    StructField("to", DateType(), True)
 ])
 
-df_current = spark.createDataFrame(data_current, schema_current)
-df_current = df_current.withColumn("date", col("date").cast(TimestampType()))
+data_historical = [
+    (1, 1, None, "otherid1", "2024-01-01", None),
+    (2, 2, None, "otherid2", "2024-10-29", None),
+    (3, 3, None, "otherid3", "2024-01-01", None),
+    (4, 4, 6, "otherid4", "2024-01-01", None),
+    (4, 4, None, "otherid4", "2023-01-01", "2024-01-01"),
+    (10, None, None, None, "2023-01-01", None)
+]
 
-# Merge on 'dataset1_key' to fill missing 'dataset3_key'
-df_updated_by_dataset1 = df_current.join(
-    df_universe.select("dataset1_key", "dataset3_key").alias("u1"),
-    on="dataset1_key",
+df_historical = spark.createDataFrame(data_historical, schema_historical) \
+    .withColumn("from", to_date(col("from"), "yyyy-MM-dd")) \
+    .withColumn("to", to_date(col("to"), "yyyy-MM-dd"))
+
+# Schema for final_df
+schema_final = StructType([
+    StructField("dataset1_key", IntegerType(), True),
+    StructField("dataset3_key", IntegerType(), True),
+    StructField("otherid", StringType(), True),
+    StructField("date", DateType(), True)
+])
+
+data_final = [
+    (1, None, "otherid1", "2024-01-01"),
+    (2, 5, "otherid2", "2024-10-30"),
+    (3, None, "otherid3", "2024-01-01"),
+    (4, 6, "otherid4", "2024-10-30"),
+    (7, None, None, "2024-10-30"),
+    (8, None, None, "2024-10-30")
+]
+
+df_final = spark.createDataFrame(data_final, schema_final) \
+    .withColumn("date", to_date(col("date"), "yyyy-MM-dd"))
+
+# 2. Define the Update Function
+
+current_date_str = '2024-10-30'
+current_date = F.lit(current_date_str).cast(DateType())
+
+# Identify non-date columns
+historical_fields = df_historical.schema.fields
+final_fields = df_final.schema.fields
+
+historical_non_date_cols = [f.name for f in historical_fields if not isinstance(f.dataType, DateType)]
+final_non_date_cols = [f.name for f in final_fields if not isinstance(f.dataType, DateType)]
+
+# Common columns excluding date columns
+common_cols = list(set(historical_non_date_cols).intersection(set(final_non_date_cols)))
+
+# Build join condition
+join_condition = None
+for col_name in common_cols:
+    condition = df_final[col_name] == df_historical[col_name]
+    if join_condition is None:
+        join_condition = condition
+    else:
+        join_condition = join_condition | condition
+
+# Join active historical records with final_df
+active_historical = df_historical.filter(col("to").isNull())
+
+joined_df = df_final.join(
+    active_historical,
+    on=join_condition,
     how="left"
-).withColumn(
-    "dataset3_key",
-    coalesce(col("dataset3_key"), col("u1.dataset3_key"))
-).drop("u1.dataset3_key")
-
-# Merge on 'dataset3_key' to fill missing 'dataset1_key'
-df_updated_by_dataset3 = df_current.join(
-    df_universe.select("dataset1_key", "dataset3_key").alias("u3"),
-    on="dataset3_key",
-    how="left"
-).withColumn(
-    "dataset1_key",
-    coalesce(col("dataset1_key"), col("u3.dataset1_key"))
-).drop("u3.dataset1_key")
-
-# Concatenate updates and remove duplicates
-df_updates = df_updated_by_dataset1.union(df_updated_by_dataset3).dropDuplicates(["dataset1_key", "dataset3_key", "otherid"])
-
-# Group by 'otherid' to merge updates
-window_spec = Window.partitionBy("otherid")
-df_updates = df_updates.withColumn("dataset1_key", first("dataset1_key").over(window_spec)) \
-                       .withColumn("dataset3_key", first("dataset3_key").over(window_spec)) \
-                       .withColumn("date", first("date").over(window_spec)) \
-                       .select("otherid", "dataset1_key", "dataset3_key", "date").dropDuplicates(["otherid"])
-
-# Define update date
-update_date = lit("2024-10-30").cast(TimestampType())
-
-# Update 'date' for rows where information was added
-df_updates = df_updates.withColumn(
-    "date",
-    when(
-        (col("otherid") == "otherid2") & (col("dataset3_key") == 5.0),
-        update_date
-    ).when(
-        (col("otherid") == "otherid4") & (col("dataset1_key") == 4.0),
-        update_date
-    ).otherwise(col("date"))
 )
 
-# Identify new keys to add
-current_keys_df = df_current.select("dataset1_key", "dataset3_key").na.drop().distinct()
-universe_keys_df = df_universe.select("dataset1_key", "dataset3_key").na.drop().distinct()
+# Identify changes
+changes_conditions = []
+for col_name in common_cols:
+    condition = (
+        (df_final[col_name] != df_historical[col_name]) |
+        (df_final[col_name].isNull() & df_historical[col_name].isNotNull()) |
+        (df_final[col_name].isNotNull() & df_historical[col_name].isNull())
+    )
+    changes_conditions.append(condition)
 
-current_keys = current_keys_df.select("dataset1_key").union(current_keys_df.select("dataset3_key")).distinct()
-universe_keys = universe_keys_df.select("dataset1_key").union(universe_keys_df.select("dataset3_key")).distinct()
+overall_change_condition = None
+for condition in changes_conditions:
+    if overall_change_condition is None:
+        overall_change_condition = condition
+    else:
+        overall_change_condition = overall_change_condition | condition
 
-new_keys = universe_keys.subtract(current_keys)
+# Update 'to' dates for existing records where changes are detected
+updated_historical = df_historical.join(
+    df_final,
+    on=join_condition,
+    how="left"
+).withColumn(
+    "to",
+    when(overall_change_condition, current_date).otherwise(col("to"))
+)
 
-# Get new rows from universe
-df_new_rows = df_universe.filter(
-    (col("dataset1_key").isin([row.dataset1_key for row in new_keys.filter(col("dataset1_key").isNotNull()).collect()])) |
-    (col("dataset3_key").isin([row.dataset3_key for row in new_keys.filter(col("dataset3_key").isNotNull()).collect()]))
-).select("dataset1_key", "dataset3_key") \
- .withColumn("otherid", lit(None).cast(StringType())) \
- .withColumn("date", update_date)
+# Create new records for changes and new entries
+new_records = joined_df.filter(overall_change_condition | col("otherkey").isNull()) \
+    .select(
+        coalesce(col("otherkey"), lit(None).cast(IntegerType())).alias("otherkey"),
+        *[col(c) for c in common_cols],
+        current_date.alias("from"),
+        lit(None).cast(DateType()).alias("to")
+    )
 
-# Identify unchanged rows
-updated_otherids = df_updates.select("otherid")
-df_unchanged = df_current.join(updated_otherids, on="otherid", how="left_anti")
+# Union updated historical with new records
+df_historical_updated = updated_historical.union(new_records)
 
-# Combine all rows
-df_final = df_updates.union(df_new_rows).union(df_unchanged)
+# 3. Post-Processing for Display
 
-# Drop duplicates and ensure completeness
-df_final = df_final.orderBy(["dataset1_key", "dataset3_key", "date"]) \
-                   .dropDuplicates(["dataset1_key", "dataset3_key"])
+# Sorting
+df_historical_sorted = df_historical_updated.withColumn(
+    "otherkey_sort",
+    when(col("otherkey").isNull(), 99999).otherwise(col("otherkey"))
+).orderBy(
+    "otherkey_sort",
+    *common_cols,
+    "from"
+).drop("otherkey_sort")
 
-df_current_final = df_final.select("dataset1_key", "dataset3_key", "otherid", "date").orderBy("dataset1_key", "dataset3_key", "date")
+# Convert dates to desired string format
+df_final_display = df_historical_sorted \
+    .withColumn("from", F.date_format(col("from"), "dd/MM/yyyy")) \
+    .withColumn("to", F.date_format(col("to"), "dd/MM/yyyy")) \
+    .na.fill({"to": ""})
 
-df_current_final.show()
+# Show the updated DataFrame
+df_final_display.show(truncate=False)
 ```
