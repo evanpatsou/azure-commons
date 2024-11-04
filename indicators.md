@@ -1,3 +1,4 @@
+```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, coalesce, first, when, lit
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DoubleType, TimestampType
@@ -117,3 +118,4 @@ df_final = df_final.orderBy(["dataset1_key", "dataset3_key", "date"]) \
 df_current_final = df_final.select("dataset1_key", "dataset3_key", "otherid", "date").orderBy("dataset1_key", "dataset3_key", "date")
 
 df_current_final.show()
+```
