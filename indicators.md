@@ -1,3 +1,4 @@
+```python
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, lit, to_date, coalesce, array, explode, date_format
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
@@ -142,3 +143,4 @@ df_final_display = df_historical_sorted \
 
 # Show the updated DataFrame
 df_final_display.show(truncate=False)
+```
