@@ -1,6 +1,5 @@
-```python
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, lit, to_date, coalesce, array, explode, date_format
+from pyspark.sql.functions import col, when, lit, to_date, coalesce, date_format, monotonically_increasing_id
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
 import pyspark.sql.functions as F
 from functools import reduce
@@ -22,11 +21,11 @@ schema_historical = StructType([
 ])
 
 data_historical = [
-    (1, 1, None, "otherid", "2024-01-01", None),
-    (2, 2, None, "otherid", "2024-10-29", None),
-    (3, 3, None, "otherid", "2024-01-01", None),
-    (4, 4, 6, "otherid", "2024-01-01", None),
-    (4, 4, None, "otherid", "2023-01-01", "2024-01-01"),
+    (1, 1, None, "otherid1", "2024-01-01", None),
+    (2, 2, None, "otherid2", "2024-10-29", None),
+    (3, 3, None, "otherid3", "2024-01-01", None),
+    (4, 4, 6, "otherid4", "2024-01-01", None),
+    (4, 4, None, "otherid4", "2023-01-01", "2024-01-01"),
     (10, None, None, None, "2023-01-01", None)
 ]
 
@@ -43,10 +42,10 @@ schema_final = StructType([
 ])
 
 data_final = [
-    (1, None, "otherid", "2024-01-01"),
-    (2, 5, "otherid", "2024-10-30"),
-    (3, None, "otherid", "2024-01-01"),
-    (4, 6, "otherid", "2024-10-30"),
+    (1, None, "otherid1", "2024-01-01"),
+    (2, 5, "otherid2", "2024-10-30"),
+    (3, None, "otherid3", "2024-01-01"),
+    (4, 6, "otherid4", "2024-10-30"),
     (7, None, None, "2024-10-30"),
     (8, None, None, "2024-10-30")
 ]
@@ -69,56 +68,45 @@ final_non_date_cols = [f.name for f in final_fields if not isinstance(f.dataType
 # Common columns excluding date columns
 common_cols = list(set(historical_non_date_cols).intersection(set(final_non_date_cols)))
 
-# Build join condition for outer join
+# Build join condition for composite key (AND condition)
 join_conditions = []
 for col_name in common_cols:
     join_conditions.append(df_final[col_name] == df_historical[col_name])
 
 if join_conditions:
-    join_condition = reduce(operator.or_, join_conditions)
+    join_condition = reduce(operator.and_, join_conditions)
 else:
     join_condition = lit(False)
 
-# Perform outer join
-joined_df = df_final.alias("final").join(
-    df_historical.alias("historical"),
-    on=join_condition,
-    how="outer"
-)
-
-# Identify changes
-changes_conditions = []
-for col_name in common_cols:
-    condition = (
-        (col("final." + col_name) != col("historical." + col_name)) |
-        (col("final." + col_name).isNull() & col("historical." + col_name).isNotNull()) |
-        (col("final." + col_name).isNotNull() & col("historical." + col_name).isNull())
-    )
-    changes_conditions.append(condition)
-
-if changes_conditions:
-    overall_change_condition = reduce(operator.or_, changes_conditions)
-else:
-    overall_change_condition = lit(False)
-
-# Update 'to' dates for existing records where changes are detected
+# Perform left join to update existing records
 updated_historical = df_historical.alias("historical").join(
     df_final.alias("final"),
     on=join_condition,
     how="left"
 ).withColumn(
     "to",
-    when(overall_change_condition, current_date).otherwise(col("to"))
+    when(
+        reduce(operator.or_, [
+            (col("final." + c) != col("historical." + c)) |
+            (col("final." + c).isNull() & col("historical." + c).isNotNull()) |
+            (col("final." + c).isNotNull() & col("historical." + c).isNull())
+            for c in common_cols
+        ]),
+        current_date
+    ).otherwise(col("to"))
 )
 
-# Create new records for changes and new entries
-new_records = joined_df.filter(overall_change_condition | col("historical.otherkey").isNull()) \
-    .select(
-        coalesce(col("historical.otherkey"), lit(None).cast(IntegerType())).alias("otherkey"),
-        *["final." + c for c in common_cols],
-        current_date.alias("from"),
-        lit(None).cast(DateType()).alias("to")
-    )
+# Create new records for additions and updates
+new_records = df_final.alias("final").join(
+    df_historical.alias("historical"),
+    on=join_condition,
+    how="left_anti"
+).select(
+    monotonically_increasing_id().alias("otherkey"),
+    *["final." + c for c in common_cols],
+    current_date.alias("from"),
+    lit(None).cast(DateType()).alias("to")
+)
 
 # Union updated historical with new records
 df_historical_updated = updated_historical.union(new_records)
@@ -143,4 +131,3 @@ df_final_display = df_historical_sorted \
 
 # Show the updated DataFrame
 df_final_display.show(truncate=False)
-```
