@@ -20,18 +20,12 @@ spark = SparkSession.builder.appName("OptimizedSCDType2Update").getOrCreate()
 assert spark is not None, "SparkSession was not created successfully."
 ```
 
-**Decision Explanation:**
-
-- **Importing Necessary Functions:** Import all functions and modules that will be used throughout the notebook to ensure smooth execution.
-- **Spark Session Initialization:** Create a Spark session to work with PySpark DataFrames.
-- **Assertion:** We assert that the `spark` object is not `None` to ensure that the Spark session was initialized successfully.
-
 ---
 
 <a id='dataframes'></a>
 ## **2. Creating Sample DataFrames**
 
-We set up sample historical and final DataFrames to simulate the data we are working with.
+We set up sample historical and current DataFrames to simulate the data we are working with.
 
 ### **Schema and Data for Historical DataFrame**
 
@@ -42,8 +36,8 @@ schema_historical = StructType([
     StructField("dataset1_key", IntegerType(), True),
     StructField("dataset3_key", IntegerType(), True),
     StructField("otherid", StringType(), True),
-    StructField("from", DateType(), True),
-    StructField("to", DateType(), True)
+    StructField("from_date", DateType(), True),
+    StructField("to_date", DateType(), True)
 ])
 
 # Data for historical DataFrame
@@ -57,45 +51,37 @@ data_historical = [
 ]
 
 # Create historical DataFrame
-df_historical = spark.createDataFrame(data_historical, schema_historical) \
-    .withColumn("from", to_date(col("from"), "yyyy-MM-dd")) \
-    .withColumn("to", to_date(col("to"), "yyyy-MM-dd"))
+historical_df = spark.createDataFrame(data_historical, schema_historical) \
+    .withColumn("from_date", to_date(col("from_date"), "yyyy-MM-dd")) \
+    .withColumn("to_date", to_date(col("to_date"), "yyyy-MM-dd"))
 ```
 
 **Assertion:**
 
 ```python
-# Assert that df_historical has been created with expected number of rows
-assert df_historical.count() == 6, f"df_historical should have 6 rows but has {df_historical.count()}."
+# Assert that historical_df has been created with expected number of rows
+assert historical_df.count() == 6, f"historical_df should have 6 rows but has {historical_df.count()}."
 
-# Assert that df_historical has the correct schema
-expected_columns = ["otherkey", "dataset1_key", "dataset3_key", "otherid", "from", "to"]
-assert df_historical.columns == expected_columns, f"df_historical columns are incorrect: {df_historical.columns}"
+# Assert that historical_df has the correct schema
+expected_columns = ["otherkey", "dataset1_key", "dataset3_key", "otherid", "from_date", "to_date"]
+assert historical_df.columns == expected_columns, f"historical_df columns are incorrect: {historical_df.columns}"
 ```
-
-**Decision Explanation:**
-
-- **Data Representation:** Use explicit schemas and sample data to ensure that the DataFrames are created correctly with appropriate data types.
-- **Date Conversion:** Convert date strings to `DateType` for accurate date comparisons and operations.
-- **Assertions:**
-  - Ensure that `df_historical` has 6 rows as expected.
-  - Check that the columns in `df_historical` match the expected schema.
 
 ---
 
-### **Schema and Data for Final DataFrame**
+### **Schema and Data for Current DataFrame**
 
 ```python
-# Schema for final DataFrame
-schema_final = StructType([
+# Schema for current DataFrame
+schema_current = StructType([
     StructField("dataset1_key", IntegerType(), True),
     StructField("dataset3_key", IntegerType(), True),
     StructField("otherid", StringType(), True),
-    StructField("date", DateType(), True)
+    StructField("from_date", DateType(), True)
 ])
 
-# Data for final DataFrame
-data_final = [
+# Data for current DataFrame
+data_current = [
     (1, None, "otherid1", "2024-01-01"),
     (2, 5, "otherid2", "2024-10-30"),
     (3, None, "otherid3", "2024-01-01"),
@@ -104,36 +90,28 @@ data_final = [
     (8, None, None, "2024-10-30")
 ]
 
-# Create final DataFrame
-df_final = spark.createDataFrame(data_final, schema_final) \
-    .withColumn("date", to_date(col("date"), "yyyy-MM-dd"))
+# Create current DataFrame
+current_df = spark.createDataFrame(data_current, schema_current) \
+    .withColumn("from_date", to_date(col("from_date"), "yyyy-MM-dd"))
 ```
 
 **Assertion:**
 
 ```python
-# Assert that df_final has been created with expected number of rows
-assert df_final.count() == 6, f"df_final should have 6 rows but has {df_final.count()}."
+# Assert that current_df has been created with expected number of rows
+assert current_df.count() == 6, f"current_df should have 6 rows but has {current_df.count()}."
 
-# Assert that df_final has the correct schema
-expected_columns_final = ["dataset1_key", "dataset3_key", "otherid", "date"]
-assert df_final.columns == expected_columns_final, f"df_final columns are incorrect: {df_final.columns}"
+# Assert that current_df has the correct schema
+expected_columns_current = ["dataset1_key", "dataset3_key", "otherid", "from_date"]
+assert current_df.columns == expected_columns_current, f"current_df columns are incorrect: {current_df.columns}"
 ```
-
-**Decision Explanation:**
-
-- **Data Representation:** Use explicit schemas and sample data to ensure that the DataFrames are created correctly with appropriate data types.
-- **Date Conversion:** Convert date strings to `DateType` for accurate date comparisons and operations.
-- **Assertions:**
-  - Ensure that `df_final` has 6 rows as expected.
-  - Check that the columns in `df_final` match the expected schema.
 
 ---
 
 <a id='update-function'></a>
 ## **3. Defining the Update Function**
 
-We perform the SCD Type 2 update by comparing the historical and final DataFrames.
+We perform the SCD Type 2 update by comparing the historical and current DataFrames.
 
 <a id='current-date'></a>
 ### **Setting the Current Date**
@@ -151,11 +129,6 @@ current_date = F.lit(current_date_str).cast(DateType())
 assert str(current_date) == "CAST(2024-10-30 AS DATE)", f"Current date column is incorrect: {str(current_date)}"
 ```
 
-**Decision Explanation:**
-
-- **Current Date Handling:** Define a current date to simulate the date of the update. This is used for setting the 'from' and 'to' dates in the historical records.
-- **Assertion:** Since `current_date` is a Column, we check its string representation.
-
 ---
 
 <a id='common-columns'></a>
@@ -163,14 +136,14 @@ assert str(current_date) == "CAST(2024-10-30 AS DATE)", f"Current date column is
 
 ```python
 # Identify non-date columns
-historical_fields = df_historical.schema.fields
-final_fields = df_final.schema.fields
+historical_fields = historical_df.schema.fields
+current_fields = current_df.schema.fields
 
 historical_non_date_cols = [f.name for f in historical_fields if not isinstance(f.dataType, DateType)]
-final_non_date_cols = [f.name for f in final_fields if not isinstance(f.dataType, DateType)]
+current_non_date_cols = [f.name for f in current_fields if not isinstance(f.dataType, DateType)]
 
 # Common columns excluding date columns
-common_cols = list(set(historical_non_date_cols).intersection(set(final_non_date_cols)))
+common_cols = list(set(historical_non_date_cols).intersection(set(current_non_date_cols)))
 ```
 
 **Assertion:**
@@ -181,72 +154,67 @@ expected_common_cols = ['dataset1_key', 'dataset3_key', 'otherid']
 assert set(common_cols) == set(expected_common_cols), f"common_cols are incorrect: {common_cols}"
 ```
 
-**Decision Explanation:**
-
-- **Dynamic Column Identification:** Dynamically identify common columns between the two DataFrames to make the code adaptable to changes in the schema.
-- **Excluding Date Columns:** Date columns are handled separately, so we focus on key columns for comparison.
-- **Assertion:** Verify that `common_cols` are correctly identified.
-
 ---
 
 <a id='composite-keys'></a>
 ### **Creating Composite Keys**
 
+Include the `from_date` in the composite key.
+
 ```python
+from functools import reduce
+
 # Function to handle null values in composite key
 def null_placeholder(column):
     return when(col(column).isNull(), lit('__NULL__')).otherwise(col(column).cast('string'))
 
-# Create composite key in historical DataFrame
-df_historical = df_historical.withColumn(
+# Create composite key in historical DataFrame, including 'from_date'
+historical_df = historical_df.withColumn(
     'composite_key',
-    concat_ws('_', *[null_placeholder(c) for c in common_cols])
+    concat_ws('_', *[null_placeholder(c) for c in common_cols + ['from_date']])
 )
 
-# Create composite key in final DataFrame
-df_final = df_final.withColumn(
+# Create composite key in current DataFrame
+current_df = current_df.withColumn(
     'composite_key',
-    concat_ws('_', *[null_placeholder(c) for c in common_cols])
+    concat_ws('_', *[null_placeholder(c) for c in common_cols + ['from_date']])
 )
 ```
 
 **Assertion:**
 
 ```python
-# Assert that composite_key column has been added to df_historical and df_final
-assert 'composite_key' in df_historical.columns, "composite_key not found in df_historical."
-assert 'composite_key' in df_final.columns, "composite_key not found in df_final."
+# Assert that composite_key column has been added to historical_df and current_df
+assert 'composite_key' in historical_df.columns, "composite_key not found in historical_df."
+assert 'composite_key' in current_df.columns, "composite_key not found in current_df."
 
 # Optionally, display some composite keys to verify
-print("Composite keys in df_historical:")
-df_historical.select('composite_key').show(5)
-print("Composite keys in df_final:")
-df_final.select('composite_key').show(5)
+print("Composite keys in historical_df:")
+historical_df.select('composite_key').show(5)
+print("Composite keys in current_df:")
+current_df.select('composite_key').show(5)
 ```
-
-**Decision Explanation:**
-
-- **Handling Nulls in Composite Keys:** Use a unique placeholder `'__NULL__'` for null values to prevent collisions with actual data and ensure accurate joins.
-- **Composite Key Creation:** By creating a composite key, we simplify the join condition and improve performance by avoiding complex multi-column joins.
-- **Assertion:** Ensure that the `composite_key` column is added to both DataFrames.
 
 ---
 
 <a id='hash-values'></a>
 ### **Computing Hash Values of Attributes**
 
+Use all attribute columns excluding keys and dates.
+
 ```python
 # Attribute columns to include in hash calculation
-attribute_cols = [c for c in df_historical.columns if c not in ('otherkey', 'from', 'to', 'composite_key')]
+# Exclude 'otherkey', 'from_date', 'to_date', and 'composite_key'
+attribute_cols = [c for c in historical_df.columns if c not in ('otherkey', 'from_date', 'to_date', 'composite_key')]
 
 # Compute hash_value in historical DataFrame
-df_historical = df_historical.withColumn(
+historical_df = historical_df.withColumn(
     'hash_value',
     sha2(concat_ws('||', *[coalesce(col(c).cast('string'), lit(''))) for c in attribute_cols]), 256)
 )
 
-# Compute hash_value in final DataFrame
-df_final = df_final.withColumn(
+# Compute hash_value in current DataFrame
+current_df = current_df.withColumn(
     'hash_value',
     sha2(concat_ws('||', *[coalesce(col(c).cast('string'), lit(''))) for c in attribute_cols]), 256)
 )
@@ -255,22 +223,16 @@ df_final = df_final.withColumn(
 **Assertion:**
 
 ```python
-# Assert that hash_value column has been added to df_historical and df_final
-assert 'hash_value' in df_historical.columns, "hash_value not found in df_historical."
-assert 'hash_value' in df_final.columns, "hash_value not found in df_final."
+# Assert that hash_value column has been added to historical_df and current_df
+assert 'hash_value' in historical_df.columns, "hash_value not found in historical_df."
+assert 'hash_value' in current_df.columns, "hash_value not found in current_df."
 
 # Optionally, display some hash values to verify
-print("Hash values in df_historical:")
-df_historical.select('hash_value').show(5)
-print("Hash values in df_final:")
-df_final.select('hash_value').show(5)
+print("Hash values in historical_df:")
+historical_df.select('hash_value').show(5)
+print("Hash values in current_df:")
+current_df.select('hash_value').show(5)
 ```
-
-**Decision Explanation:**
-
-- **Hashing Attributes:** By hashing the attribute columns, we can efficiently detect changes between records without comparing each column individually.
-- **Excluding Keys and Dates:** Exclude key and date columns from the hash calculation as they are identifiers and validity periods, not attributes.
-- **Assertion:** Ensure that the `hash_value` column is added to both DataFrames.
 
 ---
 
@@ -279,8 +241,8 @@ df_final.select('hash_value').show(5)
 
 ```python
 # Perform full outer join on composite_key
-joined_df = df_historical.alias('hist').join(
-    df_final.alias('final'),
+joined_df = historical_df.alias('hist').join(
+    current_df.alias('curr'),
     on='composite_key',
     how='full_outer'
 )
@@ -293,29 +255,29 @@ joined_df = df_historical.alias('hist').join(
 assert joined_df is not None, "joined_df was not created successfully."
 
 # Assert that joined_df has the expected number of rows
-# Since it's a full outer join, the number of rows should be at least the maximum of the two DataFrames
-expected_min_rows = max(df_historical.select('composite_key').distinct().count(), df_final.select('composite_key').distinct().count())
+expected_min_rows = max(historical_df.select('composite_key').distinct().count(), current_df.select('composite_key').distinct().count())
 actual_rows = joined_df.select('composite_key').distinct().count()
 assert actual_rows >= expected_min_rows, f"joined_df has fewer rows than expected: {actual_rows} < {expected_min_rows}"
 ```
-
-**Decision Explanation:**
-
-- **Full Outer Join:** Use a full outer join to capture all possible combinations of records from both DataFrames, ensuring no data is missed.
-- **Assertion:** Verify that `joined_df` is created and has at least the expected number of rows based on distinct `composite_key` values.
 
 ---
 
 <a id='source-identification'></a>
 ### **Identifying Source of Records**
 
+Use dynamic checks based on common columns plus `from_date`.
+
 ```python
+# Function to check if all common columns plus 'from_date' are not null in a DataFrame
+def all_common_cols_not_null(prefix):
+    return reduce(lambda a, b: a & b, [col(f"{prefix}.{c}").isNotNull() for c in common_cols + ['from_date']])
+
 # Identify source of records
 joined_df = joined_df.withColumn(
     'source',
-    when(col('hist.otherkey').isNotNull() & col('final.dataset1_key').isNotNull(), lit('both'))
-    .when(col('hist.otherkey').isNotNull(), lit('hist_only'))
-    .when(col('final.dataset1_key').isNotNull(), lit('final_only'))
+    when(all_common_cols_not_null('hist') & all_common_cols_not_null('curr'), lit('both'))
+    .when(all_common_cols_not_null('hist'), lit('hist_only'))
+    .when(all_common_cols_not_null('curr'), lit('curr_only'))
     .otherwise(lit('unknown'))
 )
 ```
@@ -333,11 +295,6 @@ for row in source_counts:
     print(f"{row['source']}: {row['count']}")
 ```
 
-**Decision Explanation:**
-
-- **Record Categorization:** Categorize records based on their presence in historical and/or final DataFrames to determine the appropriate action (e.g., update, insert).
-- **Assertion:** Ensure that the `source` column is added and optionally display counts of each source type to verify.
-
 ---
 
 <a id='processing-records'></a>
@@ -349,9 +306,9 @@ for row in source_counts:
 # Unchanged records
 unchanged_hist = joined_df.where(
     (col('source') == 'both') &
-    (col('hist.hash_value') == col('final.hash_value'))
+    (col('hist.hash_value') == col('curr.hash_value'))
 ).select(
-    [col('hist.' + c) for c in df_historical.columns if c not in ('composite_key', 'hash_value')]
+    [col('hist.' + c) for c in historical_df.columns if c not in ('composite_key', 'hash_value')]
 )
 ```
 
@@ -366,11 +323,6 @@ unchanged_count = unchanged_hist.count()
 print(f"Number of unchanged records: {unchanged_count}")
 ```
 
-**Decision Explanation:**
-
-- **Selecting Unchanged Records:** Records present in both DataFrames with identical attribute hashes are considered unchanged and are retained as is.
-- **Assertion:** Ensure that `unchanged_hist` is created and optionally print the count of unchanged records.
-
 ---
 
 #### **Updated Records**
@@ -379,12 +331,12 @@ print(f"Number of unchanged records: {unchanged_count}")
 # Updated records - expire old records
 updated_hist = joined_df.where(
     (col('source') == 'both') &
-    (col('hist.hash_value') != col('final.hash_value'))
+    (col('hist.hash_value') != col('curr.hash_value'))
 ).withColumn(
-    'to',
+    'to_date',
     current_date
 ).select(
-    [col('hist.' + c) if c not in ('to', 'composite_key', 'hash_value') else col(c) for c in df_historical.columns]
+    [col('hist.' + c) if c not in ('to_date', 'composite_key', 'hash_value') else col(c) for c in historical_df.columns]
 )
 ```
 
@@ -399,11 +351,6 @@ updated_count = updated_hist.count()
 print(f"Number of updated records: {updated_count}")
 ```
 
-**Decision Explanation:**
-
-- **Expiring Old Records:** For records that have changed, set the 'to' date to the current date to mark them as expired.
-- **Assertion:** Ensure that `updated_hist` is created and optionally print the count of updated records.
-
 ---
 
 #### **Generating Unique IDs for New Records**
@@ -413,48 +360,31 @@ print(f"Number of updated records: {updated_count}")
 window = Window.orderBy(F.monotonically_increasing_id())
 ```
 
-**Assertion:**
-
-```python
-# Since this is setup for window function, we proceed without assertion here
-```
-
-**Decision Explanation:**
-
-- **Unique ID Generation:** Use `row_number()` over a window to generate unique identifiers for new records, ensuring data integrity and avoiding duplicates.
-- **Assertion:** No assertion needed here as it's a window definition.
-
 ---
 
-#### **New Records from Final Only**
+#### **New Records from Current Only**
 
 ```python
-# New records from final_only
-new_records_from_final = joined_df.where(
-    col('source') == 'final_only'
+# New records from curr_only
+new_records_from_current = joined_df.where(
+    col('source') == 'curr_only'
 ).select(
     row_number().over(window).alias('otherkey'),
-    *[col('final.' + c) for c in df_final.columns if c not in ('composite_key', 'date', 'hash_value')],
-    col('final.date').alias('from'),
-    lit(None).cast(DateType()).alias('to')
+    *[col('curr.' + c) for c in current_df.columns if c not in ('composite_key', 'hash_value')],
+    lit(None).cast(DateType()).alias('to_date')
 )
 ```
 
 **Assertion:**
 
 ```python
-# Assert that new_records_from_final is created
-assert new_records_from_final is not None, "new_records_from_final DataFrame was not created."
+# Assert that new_records_from_current is created
+assert new_records_from_current is not None, "new_records_from_current DataFrame was not created."
 
-# Optionally, count the number of new records from final only
-new_final_count = new_records_from_final.count()
-print(f"Number of new records from final_only: {new_final_count}")
+# Optionally, count the number of new records from curr_only
+new_current_count = new_records_from_current.count()
+print(f"Number of new records from curr_only: {new_current_count}")
 ```
-
-**Decision Explanation:**
-
-- **Adding New Records:** Records present only in the final DataFrame are new and are added with the 'from' date from the final DataFrame.
-- **Assertion:** Ensure that `new_records_from_final` is created and optionally print the count.
 
 ---
 
@@ -464,12 +394,11 @@ print(f"Number of new records from final_only: {new_final_count}")
 # New records from updated records
 new_records_from_updated = joined_df.where(
     (col('source') == 'both') &
-    (col('hist.hash_value') != col('final.hash_value'))
+    (col('hist.hash_value') != col('curr.hash_value'))
 ).select(
     row_number().over(window).alias('otherkey'),
-    *[col('final.' + c) for c in df_final.columns if c not in ('composite_key', 'date', 'hash_value')],
-    col('final.date').alias('from'),
-    lit(None).cast(DateType()).alias('to')
+    *[col('curr.' + c) for c in current_df.columns if c not in ('composite_key', 'hash_value')],
+    lit(None).cast(DateType()).alias('to_date')
 )
 ```
 
@@ -484,35 +413,25 @@ new_updated_count = new_records_from_updated.count()
 print(f"Number of new records from updates: {new_updated_count}")
 ```
 
-**Decision Explanation:**
-
-- **Adding Updated Records:** For changed records, add new records with updated attributes and the 'from' date from the final DataFrame, representing the new version.
-- **Assertion:** Ensure that `new_records_from_updated` is created and optionally print the count.
-
 ---
 
 #### **Combining All Records**
 
 ```python
 # Union all records
-df_historical_updated = unchanged_hist.union(updated_hist).union(new_records_from_final).union(new_records_from_updated)
+historical_df_updated = unchanged_hist.union(updated_hist).union(new_records_from_current).union(new_records_from_updated)
 ```
 
 **Assertion:**
 
 ```python
-# Assert that df_historical_updated is created
-assert df_historical_updated is not None, "df_historical_updated DataFrame was not created."
+# Assert that historical_df_updated is created
+assert historical_df_updated is not None, "historical_df_updated DataFrame was not created."
 
 # Optionally, count the total number of records
-total_records = df_historical_updated.count()
-print(f"Total number of records in df_historical_updated: {total_records}")
+total_records = historical_df_updated.count()
+print(f"Total number of records in historical_df_updated: {total_records}")
 ```
-
-**Decision Explanation:**
-
-- **Consolidating Results:** Combine all processed records into a single updated historical DataFrame for consistency and completeness.
-- **Assertion:** Ensure that `df_historical_updated` is created and optionally print the total number of records.
 
 ---
 
@@ -520,8 +439,8 @@ print(f"Total number of records in df_historical_updated: {total_records}")
 
 ```python
 # Remove auxiliary columns if present
-df_historical_updated = df_historical_updated.select(
-    [c for c in df_historical_updated.columns if c not in ('composite_key', 'hash_value', 'source')]
+historical_df_updated = historical_df_updated.select(
+    [c for c in historical_df_updated.columns if c not in ('composite_key', 'hash_value', 'source')]
 )
 ```
 
@@ -529,52 +448,39 @@ df_historical_updated = df_historical_updated.select(
 
 ```python
 # Assert that auxiliary columns have been removed
-assert 'composite_key' not in df_historical_updated.columns, "composite_key should have been removed."
-assert 'hash_value' not in df_historical_updated.columns, "hash_value should have been removed."
-assert 'source' not in df_historical_updated.columns, "source should have been removed."
+assert 'composite_key' not in historical_df_updated.columns, "composite_key should have been removed."
+assert 'hash_value' not in historical_df_updated.columns, "hash_value should have been removed."
+assert 'source' not in historical_df_updated.columns, "source should have been removed."
 ```
-
-**Decision Explanation:**
-
-- **Cleaning DataFrame:** Remove auxiliary columns used during processing to keep the DataFrame clean and focused on relevant data.
-- **Assertion:** Ensure that the auxiliary columns are removed from `df_historical_updated`.
 
 ---
 
 <a id='post-processing'></a>
 ## **4. Post-Processing and Display**
 
-We sort the DataFrame and format the date columns for display.
-
 ### **Sorting the DataFrame**
 
 ```python
 # Sorting
-df_historical_sorted = df_historical_updated.withColumn(
+historical_df_sorted = historical_df_updated.withColumn(
     "otherkey_sort",
     when(col("otherkey").isNull(), 99999).otherwise(col("otherkey"))
 ).orderBy(
     "otherkey_sort",
     *common_cols,
-    "from"
+    "from_date"
 ).drop("otherkey_sort")
 ```
 
 **Assertion:**
 
 ```python
-# Assert that df_historical_sorted is created
-assert df_historical_sorted is not None, "df_historical_sorted DataFrame was not created."
+# Assert that historical_df_sorted is created
+assert historical_df_sorted is not None, "historical_df_sorted DataFrame was not created."
 
 # Optionally, check the number of records remains the same
-assert df_historical_sorted.count() == total_records, "Record count changed after sorting."
+assert historical_df_sorted.count() == total_records, "Record count changed after sorting."
 ```
-
-**Decision Explanation:**
-
-- **Handling Nulls in Sorting:** Replace null 'otherkey' values with a large number to ensure they are sorted at the end.
-- **Ordering the DataFrame:** Sort the DataFrame based on 'otherkey' and other relevant columns for better readability and easier verification.
-- **Assertion:** Ensure that `df_historical_sorted` is created and the record count remains the same.
 
 ---
 
@@ -582,31 +488,25 @@ assert df_historical_sorted.count() == total_records, "Record count changed afte
 
 ```python
 # Convert dates to desired string format
-df_final_display = df_historical_sorted \
-    .withColumn("from", date_format(col("from"), "dd/MM/yyyy")) \
-    .withColumn("to", date_format(col("to"), "dd/MM/yyyy")) \
-    .na.fill({"to": ""})
+final_display_df = historical_df_sorted \
+    .withColumn("from_date", date_format(col("from_date"), "dd/MM/yyyy")) \
+    .withColumn("to_date", date_format(col("to_date"), "dd/MM/yyyy")) \
+    .na.fill({"to_date": ""})
 ```
 
 **Assertion:**
 
 ```python
 # Assert that date columns are formatted correctly
-sample_row = df_final_display.select('from', 'to').limit(1).collect()[0]
-from_date = sample_row['from']
-to_date = sample_row['to']
+sample_row = final_display_df.select('from_date', 'to_date').limit(1).collect()[0]
+from_date = sample_row['from_date']
+to_date = sample_row['to_date']
 import re
 date_pattern = re.compile(r'\d{2}/\d{2}/\d{4}')
-assert date_pattern.match(from_date), f"'from' date is not formatted correctly: {from_date}"
+assert date_pattern.match(from_date), f"'from_date' date is not formatted correctly: {from_date}"
 if to_date:
-    assert date_pattern.match(to_date), f"'to' date is not formatted correctly: {to_date}"
+    assert date_pattern.match(to_date), f"'to_date' date is not formatted correctly: {to_date}"
 ```
-
-**Decision Explanation:**
-
-- **Date Formatting:** Format the 'from' and 'to' dates to 'dd/MM/yyyy' for consistency and readability.
-- **Handling Null 'to' Dates:** Replace null 'to' dates with empty strings to signify that the records are currently active.
-- **Assertion:** Ensure that the date columns are formatted as 'dd/MM/yyyy'.
 
 ---
 
@@ -614,5 +514,39 @@ if to_date:
 
 ```python
 # Show the updated DataFrame
-df_final_display.show(truncate=False)
+final_display_df.show(truncate=False)
+```
+
+---
+
+<a id='conclusion'></a>
+## **5. Conclusion**
+
+In this notebook, we addressed the weaknesses in the previous code by:
+
+- **Correct Key Specification**: Including the `from_date` in the composite key to accurately compare records.
+- **Dynamic Column Handling**: Using lists of common columns instead of hardcoded column names, making the code more flexible.
+- **Source Identification**: Adjusting the logic to use common columns and `from_date` when determining the source of records.
+- **Renaming DataFrames and Columns**: Renaming `df_historical` to `historical_df`, `df_final` to `current_df`, and `from`/`to` to `from_date`/`to_date` for clarity and to avoid reserved keywords.
+
+By making these adjustments, we ensure that the code accurately performs SCD Type 2 updates, correctly identifies changes, and is adaptable to schema changes.
+
+---
+
+**Note:** Ensure that the Spark session is stopped after the notebook execution to release resources.
+
+```python
+# Stop the Spark session
+spark.stop()
+```
+
+**Assertion:**
+
+```python
+# Attempting to use spark after stopping should raise an error
+try:
+    spark.range(1).collect()
+    assert False, "Spark session should be stopped and not allow operations."
+except Exception as e:
+    print("Spark session has been stopped successfully.")
 ```
