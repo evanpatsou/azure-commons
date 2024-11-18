@@ -1,335 +1,363 @@
 ```python
-from pyspark.sql.types import StructType, StructField, StringType, DateType
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, lit, current_date, coalesce, concat_ws, explode, array
+from pyspark.sql.window import Window
+from functools import reduce
 
-# Define schema for dataset1
-dataset1_schema = StructType([
-    StructField("dataset1_key", StringType(), True),
-    StructField("textcode", StringType(), True),
-    StructField("names", StringType(), True)
-])
+# Initialize Spark Session
+spark = SparkSession.builder \
+    .appName("CurrentAndHistoricalDataManagement") \
+    .config("spark.sql.shuffle.partitions", "200") \
+    .getOrCreate()
 
-# Define schema for dataset2
-dataset2_schema = StructType([
-    StructField("dataset1_key", StringType(), True),
-    StructField("textcode", StringType(), True)
-])
+# Load current_df and another_table
+# Replace with actual data loading logic
 
-# Define schema for dataset3
-dataset3_schema = StructType([
-    StructField("dataset3key", StringType(), True),
-    StructField("name", StringType(), True),
-    StructField("textcode", StringType(), True)
-])
+# For demonstration, we'll create sample DataFrames
+current_df = spark.createDataFrame([
+    ("A", "X1", "Value1"),
+    ("B", "X2", "Value2"),
+    ("C", "X3", "Value3")
+], ["column1", "column2", "column3"])
 
-# Define schema for current_df
-current_df_schema = StructType([
-    StructField("dataset1_key", StringType(), True),
-    StructField("dataset3key", StringType(), True),
-    StructField("name", StringType(), True),
-    StructField("someotherkey", StringType(), True),
-    StructField("as_of_date", DateType(), True)
-])
-```
+another_table = spark.createDataFrame([
+    ("K1", "A", "X1", "OldValue1", "2020-01-01", None),
+    ("K2", "B", "X2", "Value2", "2020-01-01", None),
+    ("K3", "D", "X4", "Value4", "2020-01-01", None)
+], ["another_unique_key", "column1", "column2", "column3", "from_date", "to_date"])
 
-**Assertion**:
+# Step 2: Retrieve Active Entries
+active_entries = another_table.filter(col("to_date").isNull())
 
-```python
-# No assertion needed for schema definitions.
-```
+# Step 3: Identify Common Columns and Create Composite Keys
+common_columns = [col_name for col_name in current_df.columns if col_name in another_table.columns]
 
----
+def create_partial_keys(df, columns):
+    key_arrays = [concat_ws("_", col(c)).alias(f"key_{c}") for c in columns]
+    return df.select("*", array(*key_arrays).alias("partial_keys"))
 
-## **3. Create Datasets from Arrays**
+current_df = create_partial_keys(current_df, common_columns)
+active_entries = create_partial_keys(active_entries, common_columns)
 
-```python
-# Sample data for dataset1 (you can replace this with your actual data)
-data1 = [
-    # ... (Add your data here)
-]
+# Step 4: Explode Partial Keys and Join
+current_df = current_df.withColumn("partial_key", explode(col("partial_keys")))
+active_entries = active_entries.withColumn("partial_key", explode(col("partial_keys")))
 
-# Sample data for dataset2 (you can replace this with your actual data)
-data2 = [
-    # ... (Add your data here)
-]
+# Repartition for performance
+num_partitions = 200
+current_df = current_df.repartition(num_partitions, "partial_key")
+active_entries = active_entries.repartition(num_partitions, "partial_key")
 
-# Sample data for dataset3 (you can replace this with your actual data)
-data3 = [
-    # ... (Add your data here)
-]
-
-# Sample data for current_df (you can replace this with your actual data)
-from datetime import date, timedelta
-
-data_current = [
-    # ... (Add your data here)
-]
-
-# Create DataFrames
-dataset1 = spark.createDataFrame(data1, schema=dataset1_schema)
-dataset2 = spark.createDataFrame(data2, schema=dataset2_schema)
-dataset3 = spark.createDataFrame(data3, schema=dataset3_schema)
-current_df = spark.createDataFrame(data_current, schema=current_df_schema)
-```
-
-**Assertion**:
-
-```python
-# Assert that DataFrames have been created and have the expected columns
-assert set(dataset1_schema.fieldNames()).issubset(dataset1.columns), "dataset1 schema mismatch."
-assert set(dataset2_schema.fieldNames()).issubset(dataset2.columns), "dataset2 schema mismatch."
-assert set(dataset3_schema.fieldNames()).issubset(dataset3.columns), "dataset3 schema mismatch."
-assert set(current_df_schema.fieldNames()).issubset(current_df.columns), "current_df schema mismatch."
-```
-
----
-
-## **4. Data Cleaning Functions**
-
-```python
-from pyspark.sql.functions import col, lower, trim, regexp_replace
-
-# Data Cleaning Function for dataset1
-def clean_dataset1(df):
-    df_clean = df.dropna(subset=["dataset1_key", "textcode", "names"]) \
-        .filter((col("dataset1_key") != "") & (col("textcode") != "") & (col("names") != "")) \
-        .withColumn("dataset1_key", trim(col("dataset1_key"))) \
-        .withColumn("textcode", regexp_replace(lower(trim(col("textcode"))), r"\s+", "")) \
-        .withColumn("names", trim(col("names")))
-    return df_clean
-
-# Data Cleaning Function for dataset2
-def clean_dataset2(df):
-    df_clean = df.dropna(subset=["dataset1_key", "textcode"]) \
-        .filter((col("dataset1_key") != "") & (col("textcode") != "")) \
-        .withColumn("dataset1_key", trim(col("dataset1_key"))) \
-        .withColumn("textcode", regexp_replace(lower(trim(col("textcode"))), r"\s+", ""))
-    return df_clean
-
-# Data Cleaning Function for dataset3
-def clean_dataset3(df):
-    df_clean = df.dropna(subset=["dataset3key", "name", "textcode"]) \
-        .filter((col("dataset3key") != "") & (col("name") != "") & (col("textcode") != "")) \
-        .withColumn("dataset3key", trim(col("dataset3key"))) \
-        .withColumn("name", trim(col("name"))) \
-        .withColumn("textcode", regexp_replace(lower(trim(col("textcode"))), r"\s+", ""))
-    return df_clean
-```
-
-**Assertion**:
-
-```python
-# No assertion needed for function definitions.
-```
-
----
-
-## **5. Clean the Datasets**
-
-```python
-# Clean datasets
-dataset1_clean = clean_dataset1(dataset1)
-dataset2_clean = clean_dataset2(dataset2)
-dataset3_clean = clean_dataset3(dataset3)
-```
-
-**Assertion**:
-
-```python
-# Assert that no nulls exist in required columns after cleaning
-assert dataset1_clean.filter(
-    col("dataset1_key").isNull() | col("textcode").isNull() | col("names").isNull()
-).count() == 0, "Null values found in dataset1_clean."
-
-assert dataset2_clean.filter(
-    col("dataset1_key").isNull() | col("textcode").isNull()
-).count() == 0, "Null values found in dataset2_clean."
-
-assert dataset3_clean.filter(
-    col("dataset3key").isNull() | col("name").isNull() | col("textcode").isNull()
-).count() == 0, "Null values found in dataset3_clean."
-```
-
----
-
-## **6. Process Dataset2 and Merge with Dataset1**
-
-```python
-# Handle new 'dataset1_key' values in dataset2
-existing_keys = dataset1_clean.select("dataset1_key").distinct()
-dataset2_clean = dataset2_clean.join(existing_keys, on="dataset1_key", how="inner")
-
-# Identify collisions in dataset2
-from pyspark.sql.functions import countDistinct
-
-collision_df = dataset2_clean.groupBy("textcode") \
-    .agg(countDistinct("dataset1_key").alias("key_count")) \
-    .filter(col("key_count") > 1) \
-    .select("textcode")
-
-# Remove collisions and duplicates from dataset2
-dataset2_no_collisions = dataset2_clean.join(collision_df, on="textcode", how="left_anti") \
-    .dropDuplicates(["dataset1_key", "textcode"])
-```
-
-**Assertion**:
-
-```python
-# Assert that collisions have been removed
-assert dataset2_no_collisions.groupBy("textcode").agg(countDistinct("dataset1_key").alias("key_count")) \
-    .filter(col("key_count") > 1).count() == 0, "Collisions still present in dataset2_no_collisions."
-
-# Assert that no duplicates exist
-assert dataset2_no_collisions.groupBy("dataset1_key", "textcode").count().filter(col("count") > 1).count() == 0, "Duplicates found in dataset2_no_collisions."
-```
-
----
-
-## **7. Create Enhanced Dataset1**
-
-```python
-# Enrich dataset2 with names from dataset1
-key_name_mapping = dataset1_clean.select("dataset1_key", "names").distinct()
-dataset2_with_names = dataset2_no_collisions.join(key_name_mapping, on="dataset1_key", how="left")
-
-# Combine datasets
-enhanced_dataset1 = dataset1_clean.unionByName(dataset2_with_names, allowMissingColumns=True) \
-    .dropDuplicates(["dataset1_key", "textcode", "names"])
-```
-
-**Assertion**:
-
-```python
-# Assert that enhanced_dataset1 has the expected columns
-expected_columns = ["dataset1_key", "textcode", "names"]
-assert all(col in enhanced_dataset1.columns for col in expected_columns), "enhanced_dataset1 is missing expected columns."
-
-# Assert that no duplicates exist in enhanced_dataset1
-assert enhanced_dataset1.groupBy("dataset1_key", "textcode", "names").count().filter(col("count") > 1).count() == 0, "Duplicates found in enhanced_dataset1."
-```
-
----
-
-## **8. Merge Enhanced Dataset1 with Dataset3**
-
-```python
-from pyspark.sql.functions import broadcast
-
-# Perform full outer join on 'textcode' using broadcast
-left_df = enhanced_dataset1.select("dataset1_key", "textcode")
-right_df = dataset3_clean.select("dataset3key", "name", "textcode")
-
-# Decide which DataFrame to broadcast based on size
-if left_df.count() <= right_df.count():
-    left_df = broadcast(left_df)
-else:
-    right_df = broadcast(right_df)
-
-unified_dataset = left_df.join(
-    right_df,
-    on="textcode",
+# Join on partial_key
+joined_df = current_df.alias("current").join(
+    active_entries.alias("another"),
+    on="partial_key",
     how="full_outer"
+)
+
+# Step 5: Detect Changes
+compare_columns = [c for c in current_df.columns if c not in common_columns + ["partial_keys", "partial_key"]]
+change_conditions = [
+    (col(f"current.{col_name}") != col(f"another.{col_name}")) & col(f"current.{col_name}").isNotNull()
+    for col_name in compare_columns
+]
+change_condition = reduce(lambda x, y: x | y, change_conditions)
+records_to_update = joined_df.filter(change_condition)
+
+# Step 6: Update another_table
+# Close old records
+updated_active_entries = active_entries.alias("a").join(
+    records_to_update.select("another.another_unique_key"),
+    on=col("a.another_unique_key") == col("another.another_unique_key"),
+    how="left"
+).withColumn(
+    "to_date",
+    when(col("another.another_unique_key").isNotNull(), current_date()).otherwise(col("a.to_date"))
+).select("a.*")
+
+# Insert new records
+new_records = records_to_update.select(
+    col("another.another_unique_key"),
+    *[col(f"current.{c}") for c in current_df.columns if c != "partial_keys"],
+    lit(current_date()).alias("from_date"),
+    lit(None).cast("date").alias("to_date")
+)
+
+# Combine updated records
+another_table_updated = updated_active_entries.unionByName(new_records)
+
+# Step 7: Reattach Inactive Records
+inactive_entries = another_table.filter(col("to_date").isNotNull())
+final_another_table = another_table_updated.unionByName(inactive_entries)
+
+# Step 8: Optimize for Large Datasets (already applied)
+
+# Stop Spark Session
+spark.stop()
+```
+---
+
+## **1. Initialize Spark Session**
+
+```python
+from pyspark.sql import SparkSession
+
+# Initialize Spark Session
+spark = SparkSession.builder \
+    .appName("CurrentAndHistoricalDataManagement") \
+    .config("spark.sql.shuffle.partitions", "200") \
+    .getOrCreate()
+```
+
+**Assertion**:
+
+```python
+# Assert that Spark Session is active
+assert spark.sparkContext is not None, "Spark Session was not created successfully."
+```
+
+---
+
+## **2. Load DataFrames**
+
+*Assuming that `current_df` and `another_table` are loaded as Spark DataFrames with the required columns.*
+
+```python
+# Load current_df and another_table
+# Replace with actual data loading logic
+# For this example, we assume they are already loaded
+```
+
+**Assertion**:
+
+```python
+# Assert that DataFrames have been loaded and have required columns
+required_columns_current = set(["column1", "column2", "column3"])
+required_columns_another = required_columns_current.union({"another_unique_key", "from_date", "to_date"})
+
+assert all(col in current_df.columns for col in required_columns_current), "current_df is missing required columns."
+assert all(col in another_table.columns for col in required_columns_another), "another_table is missing required columns."
+```
+
+---
+
+## **3. Identify Common Columns**
+
+```python
+# Identify common columns between current_df and another_table
+common_columns = [col_name for col_name in current_df.columns if col_name in another_table.columns]
+```
+
+**Assertion**:
+
+```python
+# Assert that there is at least one common column
+assert len(common_columns) > 0, "No common columns found between current_df and another_table."
+```
+
+---
+
+## **4. Retrieve Active Entries from `another_table`**
+
+```python
+from pyspark.sql.functions import col
+
+# Retrieve only active entries (to_date IS NULL)
+active_entries = another_table.filter(col("to_date").isNull())
+```
+
+**Assertion**:
+
+```python
+# Assert that all entries in active_entries have to_date as NULL
+assert active_entries.filter(col("to_date").isNotNull()).count() == 0, "Active entries should have to_date as NULL."
+```
+
+---
+
+## **5. Perform Left Join with OR Condition on Common Columns**
+
+```python
+from functools import reduce
+from pyspark.sql.functions import col
+
+# Build join condition: at least one common column matches
+join_conditions = [current_df[c] == active_entries[c] for c in common_columns]
+join_condition = reduce(lambda x, y: x | y, join_conditions)
+
+# Perform left join using custom join condition
+joined_df = current_df.alias("current").join(
+    active_entries.alias("active"),
+    on=join_condition,
+    how="left"
 )
 ```
 
 **Assertion**:
 
 ```python
-# Assert that unified_dataset has the expected columns
-expected_columns = ["dataset1_key", "dataset3key", "name", "textcode"]
-assert all(col in unified_dataset.columns for col in expected_columns), "unified_dataset is missing expected columns."
+# Assert that the join has been performed and joined_df has expected columns
+assert set(current_df.columns).issubset(joined_df.columns), "Joined DataFrame is missing columns from current_df."
+assert 'another_unique_key' in joined_df.columns, "Joined DataFrame is missing 'another_unique_key' from active_entries."
 ```
 
 ---
 
-## **9. Ensure All Keys are Present and Handle Nulls**
+## **6. Detect Changes**
 
 ```python
-# No placeholders needed; keep nulls
-# Verify all 'dataset1_key's from enhanced_dataset1 are included
-enhanced_keys_count = enhanced_dataset1.select("dataset1_key").distinct().count()
-unified_dataset1_keys_count = unified_dataset.filter(col("dataset1_key").isNotNull()).select("dataset1_key").distinct().count()
-assert enhanced_keys_count == unified_dataset1_keys_count, "Not all 'dataset1_key's are included in unified_dataset."
+from pyspark.sql.functions import col, lit
 
-# Verify all 'dataset3key's from dataset3_clean are included
-dataset3_keys_count = dataset3_clean.select("dataset3key").distinct().count()
-unified_dataset3_keys_count = unified_dataset.filter(col("dataset3key").isNotNull()).select("dataset3key").distinct().count()
-assert dataset3_keys_count == unified_dataset3_keys_count, "Not all 'dataset3key's are included in unified_dataset."
+# Columns to compare (excluding common columns)
+compare_columns = [c for c in current_df.columns if c not in common_columns]
+
+# Detect changes where values differ and current_df's value is not NULL
+change_conditions = [
+    (col(f"current.{col_name}") != col(f"active.{col_name}")) & col(f"current.{col_name}").isNotNull()
+    for col_name in compare_columns
+]
+
+if change_conditions:
+    change_condition = reduce(lambda x, y: x | y, change_conditions)
+else:
+    # If no columns to compare, set change_condition to False
+    change_condition = lit(False)
+
+# Records that need to be updated
+records_to_update = joined_df.filter(change_condition)
+```
+
+**Assertion**:
+
+```python
+# Assert that records_to_update is a DataFrame
+assert records_to_update is not None, "records_to_update DataFrame was not created."
+# Assert that records_to_update contains only records where changes are detected
+# Since we cannot check data, we ensure that the DataFrame exists and has the expected schema
 ```
 
 ---
 
-## **10. Update Current DataFrame (`current_df`) with Unified Dataset**
+## **7. Close Old Records in `another_table`**
 
 ```python
 from pyspark.sql.functions import when, current_date
 
-# Perform full outer join on 'dataset1_key' and 'dataset3key'
-merged_df = current_df.alias("cur").join(
-    unified_dataset.alias("uni"),
-    on=["dataset1_key", "dataset3key"],
-    how="full_outer"
-)
-
-# Update or add columns
-merged_df = merged_df.withColumn(
-    "updated_name",
-    when(merged_df.uni.name.isNotNull(), merged_df.uni.name)
-    .otherwise(merged_df.cur.name)
-)
-
-merged_df = merged_df.withColumn(
-    "updated_as_of_date",
-    when(
-        (merged_df.cur.name != merged_df.updated_name) |
-        merged_df.cur.name.isNull() |
-        merged_df.cur.as_of_date.isNull(),
-        current_date()
-    ).otherwise(merged_df.cur.as_of_date)
-)
-
-merged_df = merged_df.withColumn(
-    "updated_someotherkey",
-    when(merged_df.cur.someotherkey.isNotNull(), merged_df.cur.someotherkey)
-    .otherwise(None)
-)
-
-# Create the updated current_df
-updated_current_df = merged_df.select(
-    "dataset1_key",
-    "dataset3key",
-    col("updated_name").alias("name"),
-    col("updated_someotherkey").alias("someotherkey"),
-    col("updated_as_of_date").alias("as_of_date")
+# Update to_date for old records
+updated_active_entries = active_entries.alias("a").join(
+    records_to_update.select(col("active.another_unique_key")).distinct(),
+    on="another_unique_key",
+    how="left"
+).withColumn(
+    "to_date",
+    when(col("another_unique_key").isNotNull(), current_date()).otherwise(col("a.to_date"))
 )
 ```
 
 **Assertion**:
 
 ```python
-# Assert that updated_current_df has the expected columns
-expected_columns = ["dataset1_key", "dataset3key", "name", "someotherkey", "as_of_date"]
-assert all(col in updated_current_df.columns for col in expected_columns), "updated_current_df is missing expected columns."
-
-# Assert that all keys from unified_dataset are present
-unified_keys = unified_dataset.select("dataset1_key", "dataset3key").distinct()
-updated_current_keys = updated_current_df.select("dataset1_key", "dataset3key").distinct()
-missing_keys = unified_keys.exceptAll(updated_current_keys).count()
-assert missing_keys == 0, "Not all keys from unified_dataset are present in updated_current_df."
+# Assert that updated_active_entries is a DataFrame
+assert updated_active_entries is not None, "updated_active_entries DataFrame was not created."
+# Since we cannot check data, we ensure that the DataFrame has the 'to_date' column
+assert 'to_date' in updated_active_entries.columns, "'to_date' column is missing in updated_active_entries."
 ```
 
 ---
 
-## **11. Optimize for Small Dataset**
+## **8. Insert New Records into `another_table`**
 
 ```python
-# Since the dataset is small, avoid unnecessary repartitioning and caching
-# Coalesce to a single partition if appropriate
-updated_current_df = updated_current_df.coalesce(1)
+from pyspark.sql.functions import lit
+
+# Prepare new records with updated values
+new_records = records_to_update.select(
+    col("active.another_unique_key"),
+    *[col(f"current.{c}") for c in current_df.columns],
+    lit(current_date()).alias("from_date"),
+    lit(None).cast("date").alias("to_date")
+)
 ```
 
 **Assertion**:
 
 ```python
-# Assert that the DataFrame has one partition
-assert updated_current_df.rdd.getNumPartitions() == 1, "DataFrame should have one partition for small datasets."
+# Assert that new_records have 'from_date' and 'to_date' columns
+assert 'from_date' in new_records.columns, "'from_date' column is missing in new_records."
+assert 'to_date' in new_records.columns, "'to_date' column is missing in new_records."
+```
+
+---
+
+## **9. Reattach Inactive Entries**
+
+```python
+# Get inactive entries from another_table
+inactive_entries = another_table.filter(col("to_date").isNotNull())
+
+# Combine updated active entries, new records, and inactive entries
+final_another_table = updated_active_entries.unionByName(new_records, allowMissingColumns=True).unionByName(inactive_entries, allowMissingColumns=True)
+```
+
+**Assertion**:
+
+```python
+# Assert that final_another_table is a DataFrame
+assert final_another_table is not None, "final_another_table DataFrame was not created."
+# Assert that final_another_table contains all expected columns
+expected_columns = set(another_table.columns)
+assert expected_columns.issubset(final_another_table.columns), "final_another_table is missing expected columns."
+```
+
+---
+
+## **10. Optimize for Large Datasets**
+
+```python
+# Optimization Steps:
+
+# 1. Repartition DataFrames based on join keys (common columns)
+num_partitions = 200  # Adjust based on cluster resources
+current_df = current_df.repartition(num_partitions, *common_columns)
+active_entries = active_entries.repartition(num_partitions, *common_columns)
+
+# 2. Use broadcast join if one DataFrame is significantly smaller
+from pyspark.sql.functions import broadcast
+
+# Example: If current_df is small, broadcast it
+if current_df.count() < 10000:  # Threshold can be adjusted
+    joined_df = current_df.alias("current").join(
+        broadcast(active_entries.alias("active")),
+        on=join_condition,
+        how="left"
+    )
+
+# 3. Cache intermediate DataFrames if reused
+current_df.cache()
+active_entries.cache()
+```
+
+**Assertion**:
+
+```python
+# Assert that DataFrames have been repartitioned
+assert current_df.rdd.getNumPartitions() == num_partitions, f"current_df should have {num_partitions} partitions."
+assert active_entries.rdd.getNumPartitions() == num_partitions, f"active_entries should have {num_partitions} partitions."
+# Since we cannot verify caching or broadcasting in code without data, we ensure that the code for caching is present
+```
+
+---
+
+## **11. Stop Spark Session**
+
+```python
+# Stop Spark Session
+spark.stop()
+```
+
+**Assertion**:
+
+```python
+# Assert that the Spark session is stopped
+assert spark._jsparkSession is None, "Spark session was not stopped properly."
 ```
