@@ -12,31 +12,30 @@ def fill_missing_values(df_left, df_right, id_cols):
     Returns:
     - df_updated: Updated DataFrame.
     """
-    # Identify all common columns (including id_cols)
-    common_columns = list(set(df_left.columns) & set(df_right.columns))
+    # Identify all common columns (excluding id_cols to prevent suffixes on them)
+    common_columns = [col for col in df_left.columns if col in df_right.columns and col not in id_cols]
 
-    # Create a copy of df_left
-    df_updated = df_left.copy()
+    # Ensure identifiers are of the same type
+    df_left[id_cols] = df_left[id_cols].astype(str)
+    df_right[id_cols] = df_right[id_cols].astype(str)
 
-    for id_col in id_cols:
-        # Ensure identifiers are of the same type
-        df_left[id_col] = df_left[id_col].astype(str)
-        df_right[id_col] = df_right[id_col].astype(str)
+    # Merge df_left with df_right on id_cols
+    df_merged = df_left.merge(
+        df_right,
+        on=id_cols,
+        how='left',
+        suffixes=('', '_right')
+    )
 
-        # Merge df_updated with df_right on id_col
-        df_merged = df_updated.merge(
-            df_right,
-            on=id_col,
-            how='left',
-            suffixes=('', '_right')
-        )
+    # Update df_left with df_right values where not null
+    for col in common_columns:
+        col_right = f'{col}_right'
+        if col_right in df_merged.columns:
+            df_merged[col] = df_merged[col_right].combine_first(df_merged[col])
+            df_merged.drop(columns=[col_right], inplace=True)
 
-        # For each common column, update df_updated with df_right values
-        for col in common_columns:
-            col_right = f'{col}_right'
-            if col_right in df_merged.columns:
-                # Update df_updated[col] with df_right values where not null
-                df_updated[col] = df_merged[col_right].combine_first(df_updated[col])
+    # Return the updated DataFrame
+    df_updated = df_merged[df_left.columns]
 
     return df_updated
 ```
