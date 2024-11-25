@@ -37,5 +37,5 @@ def fill_missing_values(df_left, df_right, id_cols):
     # Return the updated DataFrame
     df_updated = df_merged[df_left.columns]
 
-    return df_updated
+    return df_updated!3
 ```
